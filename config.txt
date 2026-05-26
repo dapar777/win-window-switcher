@@ -1,0 +1,28 @@
+# Konfigurační soubor pro přepínání oken
+# Formát: <zkratka> <regulární_výraz_titulku> <příkaz_pro_spuštění>
+# Pokud zadáte zkratku a stisknete Enter:
+# 1. Nejprve se vyhledá okno odpovídající regulárnímu výrazu.
+# 2. Pokud se okno najde, aktivuje se (přenese do popředí).
+# 3. Pokud se nenajde, spustí se zadaný příkaz.
+#
+# Příklad:
+vn .*notes.* code -n c:/notes
+gc .*chrome.* "C:\Program Files\Google\Chrome\Application\chrome.exe"
+
+# Nastavení zobrazování bočního živého náhledu (true / false)
+show_thumbnails false
+
+# Nastavení zobrazování malých náhledů přímo v seznamu oken (true / false)
+show_list_thumbnails true
+
+# Měřítko zvětšení malých náhledů (např. 5 pro pětinásobné zvětšení z původních 48x30)
+list_thumbnail_scale 5.0
+
+# Výška okna přepínače
+window_height 680
+
+# Globální aktivační klávesová zkratka (např. win+tab, alt+caps, atd.)
+# POZOR: Win+Tab je v systému Windows nativně rezervován pro Task View.
+# Pokud registrace Win+Tab selže, přepínač automaticky použije bezpečný fallback.
+hotkey_modifier win
+hotkey_key tab
