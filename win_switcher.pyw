@@ -40,6 +40,8 @@ User32.SetPropW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_void_p]
 User32.SetPropW.restype = ctypes.c_bool
 User32.GetPropW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p]
 User32.GetPropW.restype = ctypes.c_void_p
+User32.RemovePropW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p]
+User32.RemovePropW.restype = ctypes.c_void_p
 User32.PostMessageW.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p, ctypes.c_void_p]
 User32.PostMessageW.restype = ctypes.c_bool
 
@@ -746,6 +748,21 @@ class WindowSwitcherApp:
             return True
             
         User32.EnumWindows(WNDENUMPROC(callback), 0)
+
+        # Deduplikace: pokud více oken má stejný WinSwitcherID (kontaminace starým fallbackem),
+        # zachovej ID jen u prvního, u ostatních odstraň (RemovePropW) a vynuluj cache.
+        seen_ids = {}
+        for w in windows:
+            wid = w["win_switcher_id"]
+            if wid is None:
+                continue
+            if wid not in seen_ids:
+                seen_ids[wid] = w["hwnd"]
+            else:
+                # Duplicitní ID – odstraň z OS okna i z cache
+                User32.RemovePropW(w["hwnd"], "WinSwitcherID")
+                w["win_switcher_id"] = None
+
         return windows
 
     def on_hotkey_pressed(self):
