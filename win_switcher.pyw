@@ -562,11 +562,8 @@ class WindowSwitcherApp:
                     self.runtime_hwnd_to_groups[group_name].add(win["hwnd"])
                     return True
 
-                # Fallback: match by class+process POUZE pokud okno ještě nemá WinSwitcherID
-                # (po restartu aplikace, než se ID obnoví)
-                if not os_prop_id and st_class and st_proc and win["class"] == st_class and win["process"].lower() == st_proc.lower():
-                    if st_id:
-                        User32.SetPropW(win["hwnd"], "WinSwitcherID", int(st_id))
+                # Fallback: match only starší záznamy bez ID, ne nové uložené položky
+                if not st_id and st_class and st_proc and win["class"] == st_class and win["process"].lower() == st_proc.lower():
                     if group_name not in self.runtime_hwnd_to_groups:
                         self.runtime_hwnd_to_groups[group_name] = set()
                     self.runtime_hwnd_to_groups[group_name].add(win["hwnd"])
