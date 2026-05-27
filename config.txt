@@ -24,5 +24,9 @@ window_height 680
 # Globální aktivační klávesová zkratka (např. win+tab, alt+caps, atd.)
 # POZOR: Win+Tab je v systému Windows nativně rezervován pro Task View.
 # Pokud registrace Win+Tab selže, přepínač automaticky použije bezpečný fallback.
-hotkey_modifier win
-hotkey_key tab
+# Doporučená kombinace pro stabilní fungování: alt+caps
+hotkey_modifier alt
+hotkey_key f12
+
+# Chování při vzniku nového okna, pokud je aktivní skupina (never / ask / always)
+new_window_action ask

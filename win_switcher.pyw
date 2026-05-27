@@ -40,11 +40,15 @@ User32.SetPropW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_void_p]
 User32.SetPropW.restype = ctypes.c_bool
 User32.GetPropW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p]
 User32.GetPropW.restype = ctypes.c_void_p
+User32.PostMessageW.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p, ctypes.c_void_p]
+User32.PostMessageW.restype = ctypes.c_bool
 
 Kernel32.OpenProcess.argtypes = [ctypes.c_ulong, ctypes.c_bool, ctypes.c_ulong]
 Kernel32.OpenProcess.restype = ctypes.c_void_p
 Kernel32.QueryFullProcessImageNameW.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_wchar_p, ctypes.POINTER(ctypes.c_ulong)]
 Kernel32.QueryFullProcessImageNameW.restype = ctypes.c_bool
+User32.SetWindowPos.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_uint]
+User32.SetWindowPos.restype = ctypes.c_bool
 Kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
 Kernel32.CloseHandle.restype = ctypes.c_bool
 
@@ -127,14 +131,20 @@ class WindowSwitcherApp:
         # Groups persistence
         self.groups_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "groups.json")
         self.groups = {}
+        self.views = {}
         self.last_group = ""
         self.last_activated_group = ""
+        self.activated_windows_hwnds = set()  # HWNDs seen when group was last activated
+        self.declined_new_windows = set()    # HWNDs user declined to add (reset on group switch)
+        self.pending_new_windows = []  # New windows not yet in any group (for 'ask' mode)
+        self.new_window_action = "never"  # Config: never | ask | always
         self.prev_active_hwnd = None
         self.prev_active_title = ""
         self.load_groups()
         # Promazání skupin při každém startu – řízeno přepínačem --keep-groups
         if not keep_groups:
-            self.groups = {}
+            self.groups = {"_": []}
+            self.views = {}
             self.save_groups()
         
         # Load config
@@ -163,6 +173,10 @@ class WindowSwitcherApp:
         # OSD overlay - trvalé zobrazení názvu skupiny na všech monitorech
         self.osd_windows = []  # seznam OSD oken pro každý monitor
         self._setup_osd()
+
+        # Background hlídání nových oken (ask/always mode)
+        self._watch_new_windows_scheduled = False
+        self.root.after(3000, self._watch_new_windows)
 
     def _get_monitors(self):
         """Vrátí seznam monitorů jako (x, y, w, h)."""
@@ -351,29 +365,43 @@ class WindowSwitcherApp:
 
                         if line.startswith("hotkey_modifier "):
                             mod = line.split(None, 1)[1].lower()
-                            if "win" in mod:
-                                self.hotkey_modifier = 0x0008
-                            elif "alt" in mod:
-                                self.hotkey_modifier = 0x0001
-                            elif "ctrl" in mod or "control" in mod:
-                                self.hotkey_modifier = 0x0002
-                            elif "shift" in mod:
-                                self.hotkey_modifier = 0x0004
+                            flags = 0
+                            for token in re.split(r"[+\s]+", mod):
+                                if token in ("win", "lwin", "rwin", "meta", "super"):
+                                    flags |= 0x0008
+                                elif token in ("alt", "menu"):
+                                    flags |= 0x0001
+                                elif token in ("ctrl", "control"):
+                                    flags |= 0x0002
+                                elif token == "shift":
+                                    flags |= 0x0004
+                            if flags:
+                                self.hotkey_modifier = flags
                             continue
 
                         if line.startswith("hotkey_key "):
                             kv = line.split(None, 1)[1].lower()
                             if kv == "tab":
                                 self.hotkey_vk = 0x09
-                            elif kv == "caps" or kv == "capslock" or kv == "caps_lock":
+                            elif kv in ("caps", "capslock", "caps_lock"):
                                 self.hotkey_vk = 0x14
                             elif kv == "space":
                                 self.hotkey_vk = 0x20
+                            elif kv.startswith("f") and kv[1:].isdigit():
+                                fn = int(kv[1:])
+                                if 1 <= fn <= 24:
+                                    self.hotkey_vk = 0x6F + fn  # F1=0x70, F12=0x7B, ...
                             else:
                                 try:
                                     self.hotkey_vk = int(kv, 16)
                                 except Exception:
                                     self.hotkey_vk = 0x09 # Fallback tab
+                            continue
+
+                        if line.startswith("new_window_action "):
+                            val = line.split(None, 1)[1].lower()
+                            if val in ("never", "ask", "always"):
+                                self.new_window_action = val
                             continue
                             
                         parts = line.split(maxsplit=2)
@@ -390,7 +418,13 @@ class WindowSwitcherApp:
         if os.path.exists(self.groups_file):
             try:
                 with open(self.groups_file, "r", encoding="utf-8") as f:
-                    self.groups = json.load(f)
+                    data = json.load(f)
+                    if isinstance(data, dict) and "groups" in data:
+                        self.groups = data.get("groups", {})
+                        self.views = data.get("views", {})
+                    else:
+                        self.groups = data
+                        self.views = {}
             except Exception as e:
                 print(f"Chyba při načítání skupin: {e}")
                 try:
@@ -399,22 +433,115 @@ class WindowSwitcherApp:
                 except Exception:
                     pass
                 self.groups = {}
+                self.views = {}
         else:
             self.groups = {}
+            self.views = {}
+        self.ensure_default_group()
 
     def save_groups(self):
+        self.ensure_default_group()
         try:
             tmp_file = self.groups_file + ".tmp"
             with open(tmp_file, "w", encoding="utf-8") as f:
-                json.dump(self.groups, f, ensure_ascii=False, indent=4)
+                json.dump({"groups": self.groups, "views": self.views}, f, ensure_ascii=False, indent=4)
             os.replace(tmp_file, self.groups_file)
         except Exception as e:
             print(f"Chyba při ukládání skupin: {e}")
 
-    def is_window_in_group(self, win, group_name):
-        # 1. Check exact WinSwitcherID window property set directly on the OS window (absolute precision!)
+    def ensure_default_group(self):
+        if "_" not in self.groups:
+            self.groups = {"_": [] , **self.groups}
+        elif list(self.groups.keys())[0] != "_":
+            default_items = self.groups.get("_", [])
+            other_groups = {k: v for k, v in self.groups.items() if k != "_"}
+            self.groups = {"_": default_items, **other_groups}
+
+    def get_window_rect(self, hwnd):
+        rect = RECT()
+        ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(rect))
+        return {
+            "left": rect.left,
+            "top": rect.top,
+            "right": rect.right,
+            "bottom": rect.bottom,
+            "width": rect.right - rect.left,
+            "height": rect.bottom - rect.top
+        }
+
+    def set_window_position(self, hwnd, x, y, width, height):
+        SWP_NOZORDER = 0x0004
+        SWP_NOACTIVATE = 0x0010
+        return User32.SetWindowPos(hwnd, None, x, y, width, height, SWP_NOZORDER | SWP_NOACTIVATE)
+
+    def _window_matches_saved_entry(self, win, entry):
         os_prop_id = User32.GetPropW(win["hwnd"], "WinSwitcherID")
+        if os_prop_id and entry.get("id") and int(os_prop_id) == int(entry.get("id")):
+            return True
+
+        if entry.get("process") and entry.get("class") and entry.get("title"):
+            return (
+                entry["process"].lower() == win["process"].lower() and
+                entry["class"] == win["class"] and
+                entry["title"] == win["title"]
+            )
+
+        if entry.get("title") and entry["title"] in win["title"]:
+            return True
+
+        return False
+
+    def save_group_view(self, group_name, view_name):
+        if group_name not in self.views:
+            self.views[group_name] = {}
+
+        view_items = []
+        for win in self.all_windows:
+            if group_name == "" or self.is_window_in_group(win, group_name):
+                rect = self.get_window_rect(win["hwnd"])
+                view_items.append({
+                    "id": int(User32.GetPropW(win["hwnd"], "WinSwitcherID")) if User32.GetPropW(win["hwnd"], "WinSwitcherID") else None,
+                    "process": win.get("process", ""),
+                    "class": win.get("class", ""),
+                    "title": win.get("title", ""),
+                    "rect": rect
+                })
+
+        self.views[group_name][view_name] = view_items
+        self.save_groups()
+        return len(view_items) > 0
+
+    def load_group_view(self, group_name, view_name):
+        group_views = self.views.get(group_name, {})
+        saved_view = group_views.get(view_name)
+        if not saved_view:
+            return False
+
+        loaded_any = False
+        for entry in saved_view:
+            for win in self.all_windows:
+                if self._window_matches_saved_entry(win, entry):
+                    rect = entry.get("rect")
+                    if rect:
+                        hwnd = win["hwnd"]
+                        if User32.IsIconic(hwnd):
+                            User32.ShowWindow(hwnd, SW_RESTORE)
+                        self.set_window_position(hwnd, rect["left"], rect["top"], rect["width"], rect["height"])
+                        loaded_any = True
+                        break
+        return loaded_any
+
+    def is_window_in_group(self, win, group_name):
+        # 1. Použij cachovaný WinSwitcherID z win dict (nastaven v get_open_windows, bez WinAPI volání)
+        os_prop_id = win.get("win_switcher_id")
         
+        # 2. Default group '_' means "all windows not in any other named group"
+        if group_name == "_":
+            other_groups = [g for g in self.groups.keys() if g != "_"]
+            if not other_groups:
+                return True
+            return not self.is_window_in_any_group(win)
+
         # 2. Check runtime session HWND mapping as well
         if group_name in self.runtime_hwnd_to_groups:
             if win["hwnd"] in self.runtime_hwnd_to_groups[group_name]:
@@ -434,29 +561,16 @@ class WindowSwitcherApp:
                         self.runtime_hwnd_to_groups[group_name] = set()
                     self.runtime_hwnd_to_groups[group_name].add(win["hwnd"])
                     return True
-                    
-                is_web_browser = any(b in (st_proc or "").lower() for b in ["chrome", "opera", "msedge", "firefox", "brave", "vivaldi", "iexplore"])
-                win_title = win["title"]
-                
-                if is_web_browser:
-                    # Web browsers get flexible matching across title changes
-                    if st_class and st_proc and win["class"] == st_class and win["process"] == st_proc:
-                        if st_id:
-                            # Re-tag the window property so it is uniquely tracked henceforce
-                            User32.SetPropW(win["hwnd"], "WinSwitcherID", int(st_id))
-                        if group_name not in self.runtime_hwnd_to_groups:
-                            self.runtime_hwnd_to_groups[group_name] = set()
-                        self.runtime_hwnd_to_groups[group_name].add(win["hwnd"])
-                        return True
-                else:
-                    # Precise title match for multiple-window apps (like Total Commander)
-                    if st_title and (st_title == win_title or st_title in win_title or win_title in st_title):
-                        if st_id:
-                            User32.SetPropW(win["hwnd"], "WinSwitcherID", int(st_id))
-                        if group_name not in self.runtime_hwnd_to_groups:
-                            self.runtime_hwnd_to_groups[group_name] = set()
-                        self.runtime_hwnd_to_groups[group_name].add(win["hwnd"])
-                        return True
+
+                # Fallback: match by class+process POUZE pokud okno ještě nemá WinSwitcherID
+                # (po restartu aplikace, než se ID obnoví)
+                if not os_prop_id and st_class and st_proc and win["class"] == st_class and win["process"].lower() == st_proc.lower():
+                    if st_id:
+                        User32.SetPropW(win["hwnd"], "WinSwitcherID", int(st_id))
+                    if group_name not in self.runtime_hwnd_to_groups:
+                        self.runtime_hwnd_to_groups[group_name] = set()
+                    self.runtime_hwnd_to_groups[group_name].add(win["hwnd"])
+                    return True
             else:
                 # Legacy string support
                 title = win["title"]
@@ -469,6 +583,8 @@ class WindowSwitcherApp:
 
     def is_window_in_any_group(self, win):
         for g_name in self.groups:
+            if g_name == "_":
+                continue
             if self.is_window_in_group(win, g_name):
                 return True
         return False
@@ -621,11 +737,14 @@ class WindowSwitcherApp:
                                     process_name = os.path.basename(path_buf.value)
                                 Kernel32.CloseHandle(h_process)
                                 
+                            # Cache WinSwitcherID hned při enumeraci – GetPropW je drahé volání
+                            win_switcher_id = User32.GetPropW(hwnd, "WinSwitcherID")
                             windows.append({
-                                "hwnd": hwnd, 
+                                "hwnd": hwnd,
                                 "title": title,
                                 "class": class_name,
-                                "process": process_name
+                                "process": process_name,
+                                "win_switcher_id": int(win_switcher_id) if win_switcher_id else None
                             })
             return True
             
@@ -656,6 +775,7 @@ class WindowSwitcherApp:
                     self.prev_active_title = ""
 
         self.all_windows = self.get_open_windows()
+
         self.entry_var.set(self.last_group)
         self.center_on_screen()
         self.root.deiconify()
@@ -694,6 +814,13 @@ class WindowSwitcherApp:
             self.hide_switcher()
 
     def on_text_changed(self):
+        # Debounce – čeká 60ms po posledním stisku klávesy, pak teprve renderuje
+        if hasattr(self, '_text_changed_after_id') and self._text_changed_after_id:
+            self.root.after_cancel(self._text_changed_after_id)
+        self._text_changed_after_id = self.root.after(60, self._do_text_changed)
+
+    def _do_text_changed(self):
+        self._text_changed_after_id = None
         self.clear_all_row_thumbnails()
         search_text = self.entry_var.get().strip()
         
@@ -702,18 +829,37 @@ class WindowSwitcherApp:
             
         self.filtered_items = []
         
-        # Check if the search text starts with a group pattern "gg..."
+        # Check if the search text starts with a group pattern "gg..." or the default group "_"
         first_token = ""
         tokens = search_text.split()
         if tokens:
             first_token = tokens[0]
             
-        if first_token.lower().startswith("gg") and len(first_token) > 2:
+        if (first_token.lower().startswith("gg") and len(first_token) > 2) or first_token == "_":
             group_name = first_token.lower()
             remaining = search_text[len(first_token):].strip()
             self.last_group = group_name  # Keep the group prefilled
-            
-            if remaining.lower() == "aaa":
+
+            if group_name == "_":
+                other_groups = [g for g in self.groups.keys() if g != "_"]
+                if not other_groups:
+                    for win in self.all_windows:
+                        if not remaining or remaining.lower() in win["title"].lower():
+                            self.filtered_items.append({
+                                "type": "window",
+                                "hwnd": win["hwnd"],
+                                "title": win["title"]
+                            })
+                else:
+                    for win in self.all_windows:
+                        if not self.is_window_in_any_group(win):
+                            if not remaining or remaining.lower() in win["title"].lower():
+                                self.filtered_items.append({
+                                    "type": "window",
+                                    "hwnd": win["hwnd"],
+                                    "title": win["title"]
+                                })
+            elif remaining.lower() == "aaa":
                 self.filtered_items.append({
                     "type": "add_current_window",
                     "group_name": group_name,
@@ -725,8 +871,36 @@ class WindowSwitcherApp:
                     "group_name": group_name,
                     "title": f"➖ [Odebrat aktuální okno] -> '{self.prev_active_title if self.prev_active_title else 'Neznámé'}' ze skupiny {group_name}"
                 })
+            elif remaining.lower() == "ddd":
+                if group_name != "_":
+                    self.filtered_items.append({
+                        "type": "delete_group",
+                        "group_name": group_name,
+                        "title": f"🗑️ [Smazat skupinu '{group_name}'] – Potvrďte Enterem"
+                    })
+                else:
+                    self.filtered_items.append({
+                        "type": "window",
+                        "hwnd": 0,
+                        "title": "⚠️ Výchozí skupinu '_' nelze smazat"
+                    })
+            elif remaining.lower().startswith("sv "):
+                view_name = remaining[3:].strip()
+                self.filtered_items.append({
+                    "type": "save_view",
+                    "group_name": group_name,
+                    "view_name": view_name,
+                    "title": f"💾 [Uložit rozložení] {group_name} -> {view_name}" if view_name else f"💾 Zadej název pohledu pro {group_name}"
+                })
+            elif remaining.lower().startswith("lv "):
+                view_name = remaining[3:].strip()
+                self.filtered_items.append({
+                    "type": "load_view",
+                    "group_name": group_name,
+                    "view_name": view_name,
+                    "title": f"📐 [Načíst rozložení] {group_name} -> {view_name}" if view_name else f"📐 Zadej název pohledu pro {group_name}"
+                })
             elif remaining:
-                # gga aa mode -> offer all windows filtered by remaining, with action to add to group_name
                 for win in self.all_windows:
                     if remaining.lower() in win["title"].lower():
                         self.filtered_items.append({
@@ -736,7 +910,6 @@ class WindowSwitcherApp:
                             "add_to_group": group_name
                         })
             else:
-                # gga mode -> offer ONLY windows currently in group_name
                 for win in self.all_windows:
                     if self.is_window_in_group(win, group_name):
                         self.filtered_items.append({
@@ -744,34 +917,48 @@ class WindowSwitcherApp:
                             "hwnd": win["hwnd"],
                             "title": win["title"]
                         })
+
+        elif search_text.lower().startswith("sv "):
+            view_name = search_text[3:].strip()
+            self.filtered_items.append({
+                "type": "save_view",
+                "group_name": "",
+                "view_name": view_name,
+                "title": f"💾 [Uložit celkové rozložení] -> {view_name}" if view_name else f"💾 Zadej název pohledu"
+            })
+        elif search_text.lower().startswith("lv "):
+            view_name = search_text[3:].strip()
+            self.filtered_items.append({
+                "type": "load_view",
+                "group_name": "",
+                "view_name": view_name,
+                "title": f"📐 [Načíst celkové rozložení] -> {view_name}" if view_name else f"📐 Zadej název pohledu"
+            })
         else:
-            # If the user has erased or typed something else, reset the prefilled group
-            # Also, if we had a prefilled group but just cleared it, prioritize ordering
-            # so that windows NOT in that cleared group appear first.
             cleared_group = self.last_group
             self.last_group = ""
-            
+
             matched_shortcut = None
             for s in self.shortcuts:
                 if s["shortcut"].lower() == search_text.lower():
                     matched_shortcut = s
                     break
-                    
+
             if matched_shortcut:
                 pattern = matched_shortcut["pattern"]
                 command = matched_shortcut["command"]
-                
+
                 pattern_matches = []
                 regex = None
                 try:
                     regex = re.compile(pattern, re.IGNORECASE)
                 except Exception:
                     pass
-                    
+
                 for win in self.all_windows:
                     if regex and regex.search(win["title"]):
                         pattern_matches.append(win)
-                        
+
                 if pattern_matches:
                     for win in pattern_matches:
                         self.filtered_items.append({
@@ -786,14 +973,10 @@ class WindowSwitcherApp:
                         "title": f"🚀 [Spustit] -> {command}"
                     })
             else:
-                # Sort order:
-                # if a group was cleared (or generally on empty search), windows NOT belonging to ANY group are prioritized at the top of the list.
-                # then windows in the cleared group are put at the very end.
-                # other windows in groups are in between.
                 windows_not_in_any_group = []
                 windows_in_cleared_group = []
                 windows_in_other_groups = []
-                
+
                 for win in self.all_windows:
                     if not search_text or search_text.lower() in win["title"].lower():
                         item_obj = {
@@ -807,7 +990,7 @@ class WindowSwitcherApp:
                             windows_in_other_groups.append(item_obj)
                         else:
                             windows_not_in_any_group.append(item_obj)
-                            
+
                 self.filtered_items = windows_not_in_any_group + windows_in_other_groups + windows_in_cleared_group
                         
         # Určení výchozího vybraného řádku na základě kontextu skupiny:
@@ -817,7 +1000,7 @@ class WindowSwitcherApp:
         current_group_ctx = ""
         if search_text:
             _t = search_text.split()
-            if _t and _t[0].lower().startswith("gg") and len(_t[0]) > 2:
+            if _t and (( _t[0].lower().startswith("gg") and len(_t[0]) > 2) or _t[0] == "_"):
                 if not search_text[len(_t[0]):].strip():
                     current_group_ctx = _t[0].lower()
 
@@ -882,8 +1065,8 @@ class WindowSwitcherApp:
                 mini_canvas.bind("<Button-1>", lambda e, idx=idx: self.select_row_by_index(idx))
                 mini_canvas.bind("<Double-Button-1>", lambda e: self.on_item_activated())
                 
-                # Setup render delayed slightly so geometry configuration initializes correctly
-                self.root.after(10, lambda mc=mini_canvas, hwnd=item["hwnd"]: self.render_row_thumbnail(mc, hwnd))
+                # Thumbnaily renderuj až 150ms po zastavení psaní (přeskočí zbytečné registrace DWM při psaní)
+                self.root.after(150, lambda mc=mini_canvas, hwnd=item["hwnd"]: self.render_row_thumbnail(mc, hwnd))
             else:
                 icon_lbl = tk.Label(
                     row_frame,
@@ -1172,7 +1355,11 @@ class WindowSwitcherApp:
         # Gather all groups, sort them alphabetically
         all_group_names = sorted(list(self.groups.keys()))
         current_val = self.entry_var.get().strip().split(maxsplit=1)
-        current_g = current_val[0].lower() if current_val and current_val[0].lower().startswith("gg") else ""
+        current_g = ""
+        if current_val:
+            first_token = current_val[0].lower()
+            if first_token == "_" or (first_token.startswith("gg") and len(first_token) > 2):
+                current_g = first_token
         
         if not current_g:
             # We are currently in "all windows" (no group). Going left wraps to the last group.
@@ -1199,13 +1386,24 @@ class WindowSwitcherApp:
         new_text = f"{new_g} {remaining}".strip() if new_g else remaining
         self.entry_var.set(new_text)
         self.entry.icursor(tk.END)
+        # Show navigation hint in status bar
+        all_names = sorted(list(self.groups.keys()))
+        if new_g:
+            pos = all_names.index(new_g) + 1 if new_g in all_names else "?"
+            self.status_label.config(text=f"← Skupina {pos}/{len(all_names)}: {new_g}  |  ← → pro přepínání skupin")
+        else:
+            self.status_label.config(text=f"← Všechna okna ({len(all_names)} skupin)  |  ← → pro přepínání skupin")
         return "break"
 
     def navigate_group_right(self, event):
         # Gather all groups, sort them alphabetically
         all_group_names = sorted(list(self.groups.keys()))
         current_val = self.entry_var.get().strip().split(maxsplit=1)
-        current_g = current_val[0].lower() if current_val and current_val[0].lower().startswith("gg") else ""
+        current_g = ""
+        if current_val:
+            first_token = current_val[0].lower()
+            if first_token == "_" or (first_token.startswith("gg") and len(first_token) > 2):
+                current_g = first_token
         
         if not current_g:
             # We are currently in "all windows" (no group). Going right wraps to the first group.
@@ -1232,7 +1430,149 @@ class WindowSwitcherApp:
         new_text = f"{new_g} {remaining}".strip() if new_g else remaining
         self.entry_var.set(new_text)
         self.entry.icursor(tk.END)
+        # Show navigation hint in status bar
+        all_names = sorted(list(self.groups.keys()))
+        if new_g:
+            pos = all_names.index(new_g) + 1 if new_g in all_names else "?"
+            self.status_label.config(text=f"Skupina {pos}/{len(all_names)}: {new_g} →  |  ← → pro přepínání skupin")
+        else:
+            self.status_label.config(text=f"Všechna okna ({len(all_names)} skupin) →  |  ← → pro přepínání skupin")
         return "break"
+
+    def _ask_new_window_dialog(self, title, message):
+        """Vlastní dialog s tlačítky: Ano / Ne / Vždy / Vždy do přepnutí.
+        Vrací: 'yes' | 'no' | 'always' | 'always_until_switch'
+        """
+        result = ["no"]
+        dlg = tk.Toplevel(self.root)
+        dlg.title(title)
+        dlg.resizable(False, False)
+        dlg.grab_set()
+        dlg.attributes("-topmost", True)
+
+        tk.Label(dlg, text=message, justify="left", padx=16, pady=12, wraplength=420).pack()
+
+        btn_frame = tk.Frame(dlg, padx=12, pady=8)
+        btn_frame.pack()
+
+        def pick(val):
+            result[0] = val
+            dlg.destroy()
+
+        # Tlačítka v pořadí pro navigaci šipkami (row, col)
+        btns = [
+            tk.Button(btn_frame, text="Ano",               width=10, command=lambda: pick("yes")),
+            tk.Button(btn_frame, text="Ne",                width=10, command=lambda: pick("no")),
+            tk.Button(btn_frame, text="Vždy",              width=18, command=lambda: pick("always")),
+            tk.Button(btn_frame, text="Vždy do přepnutí", width=18, command=lambda: pick("always_until_switch")),
+        ]
+        positions = [(0, 0), (0, 1), (1, 0), (1, 1)]
+        for btn, (r, c) in zip(btns, positions):
+            btn.grid(row=r, column=c, padx=4, pady=2)
+
+        # Navigace šipkami mezi tlačítky
+        nav = {
+            # (row, col) -> Right/Left/Down/Up
+            (0, 0): {"Right": (0,1), "Down": (1,0)},
+            (0, 1): {"Left":  (0,0), "Down": (1,1)},
+            (1, 0): {"Right": (1,1), "Up":   (0,0)},
+            (1, 1): {"Left":  (1,0), "Up":   (0,1)},
+        }
+        pos_map = {pos: btn for btn, pos in zip(btns, positions)}
+
+        def bind_nav(btn, pos):
+            def on_key(e, p=pos):
+                target = nav.get(p, {}).get(e.keysym)
+                if target:
+                    pos_map[target].focus_set()
+                return "break"
+            btn.bind("<Left>",  on_key)
+            btn.bind("<Right>", on_key)
+            btn.bind("<Up>",    on_key)
+            btn.bind("<Down>",  on_key)
+            btn.bind("<Return>", lambda e: btn.invoke())
+            btn.bind("<space>",  lambda e: btn.invoke())
+
+        for btn, pos in zip(btns, positions):
+            bind_nav(btn, pos)
+
+        dlg.update_idletasks()
+        x = self.root.winfo_screenwidth() // 2 - dlg.winfo_width() // 2
+        y = self.root.winfo_screenheight() // 2 - dlg.winfo_height() // 2
+        dlg.geometry(f"+{x}+{y}")
+
+        # Vynutit focus na dialog přes WinAPI (funguje i když je jiné okno v popředí)
+        hwnd_dlg = User32.GetAncestor(dlg.winfo_id(), 3)
+        User32.ShowWindow(hwnd_dlg, SW_SHOW)
+        User32.keybd_event(0x12, 0, 0, 0)   # ALT down – trik pro SetForegroundWindow
+        User32.SetForegroundWindow(hwnd_dlg)
+        User32.keybd_event(0x12, 0, 2, 0)   # ALT up
+        dlg.lift()
+        dlg.focus_force()
+        btns[0].focus_set()  # Focus na Ano
+
+        dlg.wait_window()
+        return result[0]
+
+    def _watch_new_windows(self):
+        """Periodicky hlídá nová okna na pozadí a ptá se uživatele (ask mode) nebo rovnou přidá (always)."""
+        try:
+            if self.new_window_action != "never" and self.last_activated_group and self.activated_windows_hwnds:
+                current_windows = self.get_open_windows()
+                current_hwnds = {w["hwnd"] for w in current_windows}
+                new_hwnds = current_hwnds - self.activated_windows_hwnds - self.declined_new_windows
+                for w in current_windows:
+                    if w["hwnd"] in new_hwnds and not self.is_window_in_any_group(w):
+                        if self.new_window_action in ("always", "always_until_switch"):
+                            self._add_win_to_group(w, self.last_activated_group)
+                            self.activated_windows_hwnds.add(w["hwnd"])
+                        else:  # ask
+                            answer = self._ask_new_window_dialog(
+                                "Nové okno",
+                                f"Přidat do skupiny '{self.last_activated_group}'?\n\n{w['title']}",
+                            )
+                            if answer == "yes":
+                                self._add_win_to_group(w, self.last_activated_group)
+                                self.activated_windows_hwnds.add(w["hwnd"])
+                            elif answer == "always":
+                                self.new_window_action = "always"
+                                self._add_win_to_group(w, self.last_activated_group)
+                                self.activated_windows_hwnds.add(w["hwnd"])
+                            elif answer == "always_until_switch":
+                                self.new_window_action = "always_until_switch"
+                                self._add_win_to_group(w, self.last_activated_group)
+                                self.activated_windows_hwnds.add(w["hwnd"])
+                            else:  # "no" – přeskoč toto okno, příště (jiné okno) se zeptá
+                                self.declined_new_windows.add(w["hwnd"])
+        finally:
+            self.root.after(2000, self._watch_new_windows)
+
+    def _add_win_to_group(self, win, gname):
+        """Přidá okno do skupiny (ukládá do groups, runtime cache i groups.json)."""
+        if gname not in self.groups:
+            self.groups[gname] = []
+        prop_id = win.get("win_switcher_id") or User32.GetPropW(win["hwnd"], "WinSwitcherID")
+        if not prop_id:
+            import random
+            prop_id = random.randint(1000000, 99999999)
+            User32.SetPropW(win["hwnd"], "WinSwitcherID", prop_id)
+        else:
+            prop_id = int(prop_id)
+        # Aktualizuj cache v all_windows dict (aby is_window_in_group nepotřebovalo WinAPI)
+        win["win_switcher_id"] = prop_id
+        for existing in self.groups[gname]:
+            if isinstance(existing, dict) and existing.get("id") == prop_id:
+                return  # Duplicit
+        self.groups[gname].append({
+            "id": prop_id,
+            "process": win.get("process", ""),
+            "class": win.get("class", ""),
+            "title": win.get("title", "")
+        })
+        if gname not in self.runtime_hwnd_to_groups:
+            self.runtime_hwnd_to_groups[gname] = set()
+        self.runtime_hwnd_to_groups[gname].add(win["hwnd"])
+        self.save_groups()
 
     def _minimize_non_group_windows(self, group_name):
         """Minimalizuje všechna okna, která nepatří do zadané skupiny."""
@@ -1248,11 +1588,11 @@ class WindowSwitcherApp:
         # Zachycení kontextu skupiny před schováním přepínače
         _cur_text = self.entry_var.get().strip()
         _cur_tokens = _cur_text.split()
-        activated_group = (
-            _cur_tokens[0].lower()
-            if _cur_tokens and _cur_tokens[0].lower().startswith("gg") and len(_cur_tokens[0]) > 2
-            else ""
-        )
+        activated_group = ""
+        if _cur_tokens:
+            first_token = _cur_tokens[0].lower()
+            if first_token == "_" or (first_token.startswith("gg") and len(first_token) > 2):
+                activated_group = first_token
 
         item = self.filtered_items[self.selected_index]
         self.hide_switcher()
@@ -1322,10 +1662,33 @@ class WindowSwitcherApp:
 
             User32.SetForegroundWindow(hwnd)
             User32.BringWindowToTop(hwnd)
+            if activated_group != self.last_activated_group and self.new_window_action == "always_until_switch":
+                self.new_window_action = "ask"
+            if activated_group != self.last_activated_group:
+                self.declined_new_windows.clear()
             self.last_activated_group = activated_group
+            self.activated_windows_hwnds = set(w["hwnd"] for w in self.all_windows)
             self.root.after(0, lambda g=activated_group: self._update_tray(g))
             self.root.after(0, lambda g=activated_group: self._update_osd(g))
             
+        elif item["type"] == "save_view":
+            if item.get("view_name"):
+                saved = self.save_group_view(item["group_name"], item["view_name"])
+                if not saved:
+                    self.status_label.config(text=f"Žádná okna ve skupině {item['group_name']} k uložení")
+                else:
+                    self.status_label.config(text=f"Rozložení uloženo: {item['view_name']}")
+            else:
+                self.status_label.config(text=f"Zadej název pohledu pro {item['group_name']}")
+        elif item["type"] == "load_view":
+            if item.get("view_name"):
+                loaded = self.load_group_view(item["group_name"], item["view_name"])
+                if loaded:
+                    self.status_label.config(text=f"Rozložení načteno: {item['view_name']}")
+                else:
+                    self.status_label.config(text=f"Nenalezeny okna pro načtení {item['view_name']}")
+            else:
+                self.status_label.config(text=f"Zadej název pohledu pro {item['group_name']}")
         elif item["type"] == "add_current_window":
             if self.prev_active_hwnd:
                 gname = item["group_name"]
@@ -1389,7 +1752,12 @@ class WindowSwitcherApp:
                     User32.ShowWindow(self.prev_active_hwnd, SW_SHOW)
                 User32.SetForegroundWindow(self.prev_active_hwnd)
                 User32.BringWindowToTop(self.prev_active_hwnd)
+                if activated_group != self.last_activated_group and self.new_window_action == "always_until_switch":
+                    self.new_window_action = "ask"
+                if activated_group != self.last_activated_group:
+                    self.declined_new_windows.clear()
                 self.last_activated_group = activated_group
+                self.activated_windows_hwnds = set(w["hwnd"] for w in self.all_windows)
                 self.root.after(0, lambda g=activated_group: self._update_tray(g))
                 self.root.after(0, lambda g=activated_group: self._update_osd(g))
                 
@@ -1425,10 +1793,9 @@ class WindowSwitcherApp:
                     for tr in to_remove:
                         self.groups[gname].remove(tr)
                         
-                    if not self.groups[gname]:
+                    if not self.groups[gname] and gname != "_":
                         del self.groups[gname]
                     self.save_groups()
-                    
                 # Cache HWND remove
                 if gname in self.runtime_hwnd_to_groups:
                     self.runtime_hwnd_to_groups[gname].discard(self.prev_active_hwnd)
@@ -1440,7 +1807,12 @@ class WindowSwitcherApp:
                     User32.ShowWindow(self.prev_active_hwnd, SW_SHOW)
                 User32.SetForegroundWindow(self.prev_active_hwnd)
                 User32.BringWindowToTop(self.prev_active_hwnd)
+                if activated_group != self.last_activated_group and self.new_window_action == "always_until_switch":
+                    self.new_window_action = "ask"
+                if activated_group != self.last_activated_group:
+                    self.declined_new_windows.clear()
                 self.last_activated_group = activated_group
+                self.activated_windows_hwnds = set(w["hwnd"] for w in self.all_windows)
                 self.root.after(0, lambda g=activated_group: self._update_tray(g))
                 self.root.after(0, lambda g=activated_group: self._update_osd(g))
             
@@ -1451,6 +1823,60 @@ class WindowSwitcherApp:
             except Exception as e:
                 messagebox.showerror("Chyba spuštění", f"Nepodařilo se spustit příkaz:\n{cmd}\n\nChyba: {e}")
 
+        elif item["type"] == "delete_group":
+            gname = item["group_name"]
+            if gname in self.groups and gname != "_":
+                # Najdi okna, která jsou POUZE v této skupině (ne v žádné jiné)
+                only_in_group = []
+                for w in self.all_windows:
+                    if self.is_window_in_group(w, gname):
+                        in_other = any(
+                            g2 != gname and g2 != "_" and self.is_window_in_group(w, g2)
+                            for g2 in self.groups
+                        )
+                        if not in_other:
+                            only_in_group.append(w)
+
+                close_them = False
+                if only_in_group:
+                    titles = "\n".join(f"  • {w['title'][:70]}" for w in only_in_group[:5])
+                    if len(only_in_group) > 5:
+                        titles += f"\n  … a {len(only_in_group) - 5} dalších"
+                    close_them = messagebox.askyesno(
+                        f"Smazat skupinu '{gname}'",
+                        f"Tato okna nejsou v žádné jiné skupině:\n{titles}\n\nZavřít je?",
+                        parent=self.root
+                    )
+
+                if close_them:
+                    WM_CLOSE = 0x0010
+                    for w in only_in_group:
+                        User32.PostMessageW(w["hwnd"], WM_CLOSE, 0, 0)
+
+                del self.groups[gname]
+                self.runtime_hwnd_to_groups.pop(gname, None)
+                self.views.pop(gname, None)
+                if self.last_group == gname:
+                    self.last_group = "_"
+                if self.last_activated_group == gname:
+                    self.last_activated_group = ""
+                self.save_groups()
+                self.status_label.config(text=f"Skupina '{gname}' smazána.")
+
+        elif item["type"] == "ask_add_to_group":
+            gname = item["group_name"]
+            for w in self.all_windows:
+                if w["hwnd"] == item["hwnd"]:
+                    self._add_win_to_group(w, gname)
+                    break
+            self.pending_new_windows = [w for w in self.pending_new_windows if w["hwnd"] != item["hwnd"]]
+            hwnd = item["hwnd"]
+            if hwnd:
+                if User32.IsIconic(hwnd):
+                    User32.ShowWindow(hwnd, SW_RESTORE)
+                User32.SetForegroundWindow(hwnd)
+                User32.BringWindowToTop(hwnd)
+
     def listen_global_hotkey(self):
         HOTKEY_ID = 2411
         mod = getattr(self, "hotkey_modifier", 0x0008)
@@ -1459,16 +1885,18 @@ class WindowSwitcherApp:
         success = User32.RegisterHotKey(None, HOTKEY_ID, mod, vk)
         
         if not success:
-            # Win+Tab is standard system shortcut and Windows prevents registering it. Let's fallback to Alt+Caps Lock or Alt+Space cleanly
-            print("Zvolená zkratka je blokována systémem. Zkouším registraci Alt+Caps Lock...")
+            last_error = ctypes.GetLastError()
+            print(f"Zvolená zkratka je blokována nebo selhala (kód chyby {last_error}). Zkouším registraci Alt+Caps Lock...")
             success = User32.RegisterHotKey(None, HOTKEY_ID, 0x0001, 0x14) # Alt + Caps Lock
             
             if not success:
-                print("Zkouším registraci Alt+Ctrl+Mezerník...")
+                last_error = ctypes.GetLastError()
+                print(f"Alt+Caps Lock selhalo (kód chyby {last_error}). Zkouším registraci Alt+Ctrl+Mezerník...")
                 success = User32.RegisterHotKey(None, HOTKEY_ID, 0x0001 | 0x0002, 0x20) # Alt + Ctrl + Space
                 
                 if not success:
-                    print("Nepodařilo se zaregistrovat klávesovou zkratku.")
+                    last_error = ctypes.GetLastError()
+                    print(f"Nepodařilo se zaregistrovat žádnou klávesovou zkratku (kód chyby {last_error}).")
                     return
 
         try:
