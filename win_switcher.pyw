@@ -42,6 +42,8 @@ User32.GetPropW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p]
 User32.GetPropW.restype = ctypes.c_void_p
 User32.RemovePropW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p]
 User32.RemovePropW.restype = ctypes.c_void_p
+User32.SetWindowTextW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p]
+User32.SetWindowTextW.restype = ctypes.c_bool
 User32.PostMessageW.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p, ctypes.c_void_p]
 User32.PostMessageW.restype = ctypes.c_bool
 
@@ -51,8 +53,40 @@ Kernel32.QueryFullProcessImageNameW.argtypes = [ctypes.c_void_p, ctypes.c_ulong,
 Kernel32.QueryFullProcessImageNameW.restype = ctypes.c_bool
 User32.SetWindowPos.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_uint]
 User32.SetWindowPos.restype = ctypes.c_bool
+User32.SetWindowLongW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_long]
+User32.SetWindowLongW.restype = ctypes.c_long
 Kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
 Kernel32.CloseHandle.restype = ctypes.c_bool
+User32.GetWindowRect.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+User32.GetWindowRect.restype = ctypes.c_bool
+User32.SetWinEventHook.argtypes = [ctypes.c_uint, ctypes.c_uint, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_uint]
+User32.SetWinEventHook.restype = ctypes.c_void_p
+User32.UnhookWinEvent.argtypes = [ctypes.c_void_p]
+User32.UnhookWinEvent.restype = ctypes.c_bool
+User32.GetMessageW.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint, ctypes.c_uint]
+User32.GetMessageW.restype = ctypes.c_int
+User32.TranslateMessage.argtypes = [ctypes.c_void_p]
+User32.TranslateMessage.restype = ctypes.c_bool
+User32.DispatchMessageW.argtypes = [ctypes.c_void_p]
+User32.DispatchMessageW.restype = ctypes.c_void_p
+User32.SystemParametersInfoW.argtypes = [ctypes.c_uint, ctypes.c_uint, ctypes.c_void_p, ctypes.c_uint]
+User32.SystemParametersInfoW.restype = ctypes.c_bool
+User32.GetMonitorInfoW.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+User32.GetMonitorInfoW.restype = ctypes.c_bool
+
+Shell32 = ctypes.windll.shell32
+Shell32.SHAppBarMessage.argtypes = [ctypes.c_uint, ctypes.c_void_p]
+Shell32.SHAppBarMessage.restype = ctypes.c_ulong
+
+# AppBar constants
+ABM_NEW      = 0x00000000
+ABM_REMOVE   = 0x00000001
+ABM_QUERYPOS = 0x00000002
+ABM_SETPOS   = 0x00000003
+ABE_LEFT     = 0
+ABE_TOP      = 1
+ABE_RIGHT    = 2
+ABE_BOTTOM   = 3
 
 # Rect structure for DWM
 class RECT(ctypes.Structure):
@@ -61,6 +95,16 @@ class RECT(ctypes.Structure):
         ("top", ctypes.c_long),
         ("right", ctypes.c_long),
         ("bottom", ctypes.c_long),
+    ]
+
+class APPBARDATA(ctypes.Structure):
+    _fields_ = [
+        ("cbSize",           ctypes.c_uint),
+        ("hWnd",             ctypes.c_void_p),
+        ("uCallbackMessage", ctypes.c_uint),
+        ("uEdge",            ctypes.c_uint),
+        ("rc",               RECT),
+        ("lParam",           ctypes.c_ssize_t),
     ]
 
 # DWM Thumbnail Structure and definitions
@@ -79,6 +123,28 @@ DWM_TNP_OPACITY = 0x00000004
 DWM_TNP_VISIBLE = 0x00000008
 DWM_TNP_SOURCECLIENTAREAONLY = 0x00000010
 
+# --- ITaskbarList COM (for hiding/showing taskbar buttons per group) ---
+class _GUID(ctypes.Structure):
+    _fields_ = [
+        ("Data1", ctypes.c_ulong),
+        ("Data2", ctypes.c_ushort),
+        ("Data3", ctypes.c_ushort),
+        ("Data4", ctypes.c_ubyte * 8),
+    ]
+
+def _make_guid(d1, d2, d3, d4):
+    g = _GUID()
+    g.Data1 = d1
+    g.Data2 = d2
+    g.Data3 = d3
+    g.Data4 = (ctypes.c_ubyte * 8)(*d4)
+    return g
+
+# CLSID_TaskbarList  = {56FDF344-FD6D-11D0-958A-006097C9A090}
+# IID_ITaskbarList   = {56FDF342-FD6D-11D0-958A-006097C9A090}
+_CLSID_TaskbarList = _make_guid(0x56FDF344, 0xFD6D, 0x11D0, [0x95, 0x8A, 0x00, 0x60, 0x97, 0xC9, 0xA0, 0x90])
+_IID_ITaskbarList  = _make_guid(0x56FDF342, 0xFD6D, 0x11D0, [0x95, 0x8A, 0x00, 0x60, 0x97, 0xC9, 0xA0, 0x90])
+
 # Configure DWM argument signatures
 DwmApi.DwmRegisterThumbnail.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p)]
 DwmApi.DwmUpdateThumbnailProperties.argtypes = [ctypes.c_void_p, ctypes.POINTER(DWM_THUMBNAIL_PROPERTIES)]
@@ -86,10 +152,18 @@ DwmApi.DwmUnregisterThumbnail.argtypes = [ctypes.c_void_p]
 
 GWL_EXSTYLE = -20
 WS_EX_TOOLWINDOW = 0x00000080
+WS_EX_APPWINDOW = 0x00040000
 GW_OWNER = 4
 SW_RESTORE = 9
 SW_SHOW = 5
 WM_HOTKEY = 0x0312
+HWND_TOPMOST   = -1
+HWND_NOTOPMOST = -2
+SWP_NOMOVE     = 0x0002
+SWP_NOSIZE_FLAG = 0x0001
+SWP_NOZORDER_FLAG = 0x0004
+EVENT_SYSTEM_MOVESIZEEND = 0x000B
+WINEVENT_OUTOFCONTEXT    = 0x0000
 
 # --- Application Configuration ---
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.txt")
@@ -142,6 +216,23 @@ class WindowSwitcherApp:
         self.new_window_action = "never"  # Config: never | ask | always
         self.prev_active_hwnd = None
         self.prev_active_title = ""
+        # Taskbar icon hiding via ITaskbarList COM
+        self.hide_taskbar_icons = False
+        self.hide_alttab_icons = False
+        self._taskbar_hidden_hwnds = set()
+        self._taskbar_hidden_ex_styles = {}  # hwnd -> original EXSTYLE
+        self._taskbar_com_obj = None
+        self._taskbar_vtable = None
+        # Multi-select state (aaa / aai mode)
+        self.multi_selected = set()        # set of indices in filtered_items
+        self.multi_sel_bg = "#1e3e5e"      # bg for multi-selected (not cursor) rows
+        # Window anchoring (kkk / kka)
+        self.anchored_hwnds = {}           # hwnd -> {"group_ctx": str|None, "global_anchor": bool}
+        self._anchor_hook_handle = None
+        self._anchor_proc_ref = None       # Keep WinEventProc from GC
+        self._anchor_hook_thread = None
+        self._original_workareas = {}      # kept for compat but unused
+        self._appbar_windows = {}          # key -> (helper_toplevel, hwnd)
         self.load_groups()
         # Promazání skupin při každém startu – řízeno přepínačem --keep-groups
         if not keep_groups:
@@ -151,6 +242,7 @@ class WindowSwitcherApp:
         
         # Load config
         self.load_config()
+        self._init_taskbar_com()
         
         # Setup modern GUI layout
         self.setup_ui()
@@ -404,6 +496,16 @@ class WindowSwitcherApp:
                             val = line.split(None, 1)[1].lower()
                             if val in ("never", "ask", "always"):
                                 self.new_window_action = val
+                            continue
+
+                        if line.startswith("hide_taskbar_icons "):
+                            val = line.split(None, 1)[1].lower()
+                            self.hide_taskbar_icons = val in ("true", "1", "yes")
+                            continue
+
+                        if line.startswith("hide_alttab_icons "):
+                            val = line.split(None, 1)[1].lower()
+                            self.hide_alttab_icons = val in ("true", "1", "yes")
                             continue
                             
                         parts = line.split(maxsplit=2)
@@ -692,6 +794,9 @@ class WindowSwitcherApp:
         self.entry.bind("<Left>", self.navigate_group_left)
         self.entry.bind("<Right>", self.navigate_group_right)
         self.entry.bind("<Return>", self.on_item_activated)
+        # Intercept Insert via generic KeyPress + Windows keycode (VK_INSERT=45).
+        # This works regardless of keysym name, keyboard layout, or Tk version.
+        self.entry.bind("<KeyPress>", self._on_entry_keypress, add=True)
 
     def center_on_screen(self):
         self.root.update_idletasks()
@@ -717,7 +822,8 @@ class WindowSwitcherApp:
                         return True
                         
                     ex_style = User32.GetWindowLongW(hwnd, GWL_EXSTYLE)
-                    if not (ex_style & WS_EX_TOOLWINDOW):
+                    hidden_by_switcher = bool(User32.GetPropW(hwnd, "WinSwitcherExStyle"))
+                    if not (ex_style & WS_EX_TOOLWINDOW) or hidden_by_switcher:
                         owner = User32.GetWindow(hwnd, GW_OWNER)
                         if not owner:
                             # Retrieve class name and process executable name
@@ -789,6 +895,7 @@ class WindowSwitcherApp:
                     self.prev_active_title = ""
 
         self.all_windows = self.get_open_windows()
+        self._refresh_window_group_titles()
 
         self.entry_var.set(self.last_group)
         self.center_on_screen()
@@ -837,6 +944,7 @@ class WindowSwitcherApp:
         self._text_changed_after_id = None
         self.clear_all_row_thumbnails()
         search_text = self.entry_var.get().strip()
+        self.multi_selected = set()  # Reset multi-select on any text change
         
         for r_widget in self.scroll_rows_frame.winfo_children():
             r_widget.destroy()
@@ -874,10 +982,39 @@ class WindowSwitcherApp:
                                     "title": win["title"]
                                 })
             elif remaining.lower() == "aaa":
+                # Multi-select: list all windows NOT in this group
+                self.multi_selected = set()
+                for win in self.all_windows:
+                    if not self.is_window_in_group(win, group_name):
+                        self.filtered_items.append({
+                            "type": "window",
+                            "hwnd": win["hwnd"],
+                            "title": win["title"],
+                            "add_to_group": group_name,
+                            "aaa_mode": True,
+                        })
+            elif remaining.lower() == "aai":
+                # Exclusive add: list non-group windows; on activate remove from other groups too
+                self.multi_selected = set()
+                for win in self.all_windows:
+                    if not self.is_window_in_group(win, group_name):
+                        self.filtered_items.append({
+                            "type": "window",
+                            "hwnd": win["hwnd"],
+                            "title": win["title"],
+                            "add_to_group": group_name,
+                            "aai_mode": True,
+                        })
+            elif remaining.lower() == "kkk":
+                cur_hwnd = self.prev_active_hwnd
+                cur_title = self.prev_active_title or "Neznámé"
+                is_anchored = cur_hwnd and cur_hwnd in self.anchored_hwnds
+                label = "📌 [Odkotvit okno]" if is_anchored else "📌 [Ukotvit okno]"
                 self.filtered_items.append({
-                    "type": "add_current_window",
-                    "group_name": group_name,
-                    "title": f"➕ [Přidat aktuální okno] -> '{self.prev_active_title if self.prev_active_title else 'Neznámé'}' do skupiny {group_name}"
+                    "type": "anchor_window",
+                    "group_ctx": group_name,
+                    "global_anchor": False,
+                    "title": f"{label} '{cur_title}' ve skupině {group_name}",
                 })
             elif remaining.lower() == "rrr":
                 self.filtered_items.append({
@@ -947,6 +1084,28 @@ class WindowSwitcherApp:
                 "group_name": "",
                 "view_name": view_name,
                 "title": f"📐 [Načíst celkové rozložení] -> {view_name}" if view_name else f"📐 Zadej název pohledu"
+            })
+        elif search_text.lower() == "kkk":
+            cur_hwnd = self.prev_active_hwnd
+            cur_title = self.prev_active_title or "Neznámé"
+            is_anchored = cur_hwnd and cur_hwnd in self.anchored_hwnds
+            label = "📌 [Odkotvit okno]" if is_anchored else "📌 [Ukotvit okno]"
+            self.filtered_items.append({
+                "type": "anchor_window",
+                "group_ctx": "",
+                "global_anchor": False,
+                "title": f"{label} '{cur_title}' (bez skupiny)",
+            })
+        elif search_text.lower() == "kka":
+            cur_hwnd = self.prev_active_hwnd
+            cur_title = self.prev_active_title or "Neznámé"
+            is_anchored = cur_hwnd and cur_hwnd in self.anchored_hwnds
+            label = "📌 [Odkotvit okno]" if is_anchored else "📌 [Ukotvit okno (globálně)]"
+            self.filtered_items.append({
+                "type": "anchor_window",
+                "group_ctx": None,
+                "global_anchor": True,
+                "title": f"{label} '{cur_title}' (globálně)",
             })
         else:
             cleared_group = self.last_group
@@ -1051,8 +1210,16 @@ class WindowSwitcherApp:
             
         for idx, item in enumerate(self.filtered_items):
             is_selected = (idx == self.selected_index)
-            bg = self.list_sel_bg if is_selected else self.list_bg
-            fg = self.list_sel_fg if is_selected else self.fg_color
+            is_multi = (idx in self.multi_selected)
+            if is_selected:
+                bg = self.list_sel_bg
+                fg = self.list_sel_fg
+            elif is_multi:
+                bg = self.multi_sel_bg
+                fg = "#cce4ff"
+            else:
+                bg = self.list_bg
+                fg = self.fg_color
             
             row_frame = tk.Frame(self.scroll_rows_frame, bg=bg, bd=0, padx=5, pady=4)
             row_frame.pack(fill=tk.X, expand=True)
@@ -1082,9 +1249,17 @@ class WindowSwitcherApp:
                 # Thumbnaily renderuj až 150ms po zastavení psaní (přeskočí zbytečné registrace DWM při psaní)
                 self.root.after(150, lambda mc=mini_canvas, hwnd=item["hwnd"]: self.render_row_thumbnail(mc, hwnd))
             else:
+                if item["type"] == "command":
+                    icon_text = "🚀"
+                elif item.get("aaa_mode") or item.get("aai_mode"):
+                    icon_text = "+" if not is_multi else "✓"
+                elif item["type"] == "anchor_window":
+                    icon_text = "📌"
+                else:
+                    icon_text = "🪟"
                 icon_lbl = tk.Label(
                     row_frame,
-                    text="🚀" if item["type"] == "command" else "🪟",
+                    text=icon_text,
                     font=("Segoe UI", 11),
                     bg=bg,
                     fg=fg,
@@ -1092,10 +1267,16 @@ class WindowSwitcherApp:
                 )
                 icon_lbl.pack(side=tk.LEFT, padx=(5, 10))
                 icon_lbl.bind("<Button-1>", lambda e, idx=idx: self.select_row_by_index(idx))
+
+            # Build display title (prepend 📌 for anchored windows in normal mode)
+            display_title = item["title"]
+            if item["type"] == "window" and item.get("hwnd") and item["hwnd"] in self.anchored_hwnds:
+                if not item.get("aaa_mode") and not item.get("aai_mode"):
+                    display_title = "📌 " + display_title
                 
             title_lbl = tk.Label(
                 row_frame,
-                text=item["title"],
+                text=display_title,
                 font=("Segoe UI", 11, "bold" if is_selected else "normal"),
                 bg=bg,
                 fg=fg,
@@ -1355,13 +1536,47 @@ class WindowSwitcherApp:
 
     def move_selection_down(self, event):
         if self.filtered_items:
+            in_multi_mode = any(item.get("aaa_mode") or item.get("aai_mode") for item in self.filtered_items)
+            if in_multi_mode and (event.state & 0x1):  # Shift held – toggle current
+                self.multi_selected ^= {self.selected_index}
+            elif not in_multi_mode:  # mimo multi-mód: reset výběru
+                self.multi_selected.clear()
+            # plain arrow v multi-módu (bez Shift): jen posun kurzoru, výběr se nemění
             self.selected_index = (self.selected_index + 1) % len(self.filtered_items)
+            if in_multi_mode and (event.state & 0x1):  # Shift – toggle novou pozici
+                self.multi_selected ^= {self.selected_index}
             self.render_rows()
         return "break"
 
     def move_selection_up(self, event):
         if self.filtered_items:
+            in_multi_mode = any(item.get("aaa_mode") or item.get("aai_mode") for item in self.filtered_items)
+            if in_multi_mode and (event.state & 0x1):  # Shift held – toggle current
+                self.multi_selected ^= {self.selected_index}
+            elif not in_multi_mode:  # mimo multi-mód: reset výběru
+                self.multi_selected.clear()
+            # plain arrow v multi-módu (bez Shift): jen posun kurzoru, výběr se nemění
             self.selected_index = (self.selected_index - 1) % len(self.filtered_items)
+            if in_multi_mode and (event.state & 0x1):  # Shift – toggle novou pozici
+                self.multi_selected ^= {self.selected_index}
+            self.render_rows()
+        return "break"
+
+    def _on_entry_keypress(self, event):
+        """Generický handler kláves na entry – chytá Insert přes keycode (VK_INSERT=45)."""
+        # keycode 45 = VK_INSERT na Windows, funguje bez ohledu na keysym/rozložení klávesnice
+        if event.keycode == 45 or event.keysym in ('Insert', 'KP_Insert'):
+            return self.on_insert_toggle_select(event)
+        # Všechny ostatní klávesy: nevrací "break", normální zpracování pokračuje
+
+    def on_insert_toggle_select(self, event=None):
+        """Označí / odznačí aktuální položku v aaa/aai režimu a posune kurzor dolů."""
+        if not self.filtered_items:
+            return "break"
+        in_multi_mode = any(item.get("aaa_mode") or item.get("aai_mode") for item in self.filtered_items)
+        if in_multi_mode:
+            self.multi_selected ^= {self.selected_index}
+            self.selected_index = (self.selected_index + 1) % len(self.filtered_items)
             self.render_rows()
         return "break"
 
@@ -1561,6 +1776,48 @@ class WindowSwitcherApp:
         finally:
             self.root.after(2000, self._watch_new_windows)
 
+    def _window_title_base(self, hwnd):
+        length = User32.GetWindowTextLengthW(hwnd)
+        if length <= 0:
+            return ""
+        buffer = ctypes.create_unicode_buffer(length + 1)
+        User32.GetWindowTextW(hwnd, buffer, length + 1)
+        title = buffer.value
+        marker = " [WinSwitcher: "
+        if title.endswith("]") and marker in title:
+            idx = title.rfind(marker)
+            if idx != -1:
+                return title[:idx]
+        return title
+
+    def _window_group_suffix(self, groups):
+        if not groups:
+            return ""
+        return f" [WinSwitcher: {', '.join(groups)}]"
+
+    def get_groups_for_window(self, win):
+        groups = []
+        for gname in self.groups:
+            if gname == "_":
+                continue
+            if self.is_window_in_group(win, gname):
+                groups.append(gname)
+        return groups
+
+    def _update_window_title_groups(self, win):
+        title = self._window_title_base(win["hwnd"])
+        groups = self.get_groups_for_window(win)
+        suffix = self._window_group_suffix(groups)
+        new_title = title + suffix
+        if new_title != self._window_title_base(win["hwnd"]):
+            User32.SetWindowTextW(win["hwnd"], new_title)
+        win["title"] = title
+        win["groups"] = groups
+
+    def _refresh_window_group_titles(self):
+        for win in self.all_windows:
+            self._update_window_title_groups(win)
+
     def _add_win_to_group(self, win, gname):
         """Přidá okno do skupiny (ukládá do groups, runtime cache i groups.json)."""
         if gname not in self.groups:
@@ -1587,6 +1844,7 @@ class WindowSwitcherApp:
             self.runtime_hwnd_to_groups[gname] = set()
         self.runtime_hwnd_to_groups[gname].add(win["hwnd"])
         self.save_groups()
+        self._refresh_window_group_titles()
 
     def _minimize_non_group_windows(self, group_name):
         """Minimalizuje všechna okna, která nepatří do zadané skupiny."""
@@ -1594,6 +1852,281 @@ class WindowSwitcherApp:
         for win in self.all_windows:
             if not self.is_window_in_group(win, group_name):
                 User32.ShowWindow(win["hwnd"], SW_MINIMIZE)
+
+    def _remove_win_from_group(self, win, gname):
+        """Odebere okno ze skupiny (groups dict + runtime cache)."""
+        if gname not in self.groups:
+            return
+        prop_id = win.get("win_switcher_id") or User32.GetPropW(win["hwnd"], "WinSwitcherID")
+        if prop_id:
+            prop_id = int(prop_id)
+        to_remove = []
+        for entry in self.groups[gname]:
+            if isinstance(entry, dict):
+                if prop_id and entry.get("id") == prop_id:
+                    to_remove.append(entry)
+                elif entry.get("process") == win.get("process") and entry.get("class") == win.get("class"):
+                    to_remove.append(entry)
+            else:
+                if entry == win.get("title"):
+                    to_remove.append(entry)
+        for e in to_remove:
+            self.groups[gname].remove(e)
+        if gname in self.runtime_hwnd_to_groups:
+            self.runtime_hwnd_to_groups[gname].discard(win["hwnd"])
+        if not self.groups[gname] and gname != "_":
+            del self.groups[gname]
+            self.runtime_hwnd_to_groups.pop(gname, None)
+        self.save_groups()
+        self._refresh_window_group_titles()
+
+    # --------------- Window anchoring (kkk / kka) ---------------
+
+    def _anchor_window(self, hwnd, group_ctx, global_anchor=False):
+        """Ukotvit okno: nastaví HWND_TOPMOST a omezí work area monitorů."""
+        if not hwnd:
+            return
+        User32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE_FLAG)
+        rect = RECT()
+        User32.GetWindowRect(hwnd, ctypes.byref(rect))
+        self.anchored_hwnds[hwnd] = {
+            "group_ctx": group_ctx,
+            "global_anchor": global_anchor,
+            "rect": (rect.left, rect.top, rect.right, rect.bottom),
+        }
+        self._apply_anchor_workarea()
+        self._ensure_anchor_hook_running()
+
+    def _unanchor_window(self, hwnd):
+        """Odkotvit okno: vrátí HWND_NOTOPMOST a obnoví work area."""
+        if hwnd in self.anchored_hwnds:
+            User32.SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE_FLAG)
+            del self.anchored_hwnds[hwnd]
+        self._apply_anchor_workarea()  # Recompute with remaining anchors (or full restore)
+
+    def _apply_anchor_workarea(self):
+        """Registruje AppBar okna pro každou ukotvenu stranu monitoru, aby
+        maximalizovaná okna nepřekrývala kotvy. Používá SHAppBarMessage –
+        stejný mechanismus jako taskbar, takže Explorer jej nepřepisuje."""
+        self._remove_appbar_windows()
+        if not self.anchored_hwnds:
+            return
+
+        MonitorEnumProc = ctypes.WINFUNCTYPE(
+            ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p,
+            ctypes.POINTER(RECT), ctypes.c_void_p
+        )
+        monitor_rects = []
+        def _mon_cb(hMon, hDC, lpRect, lParam):
+            r = lpRect.contents
+            monitor_rects.append((hMon, r.left, r.top, r.right, r.bottom))
+            return True
+        User32.EnumDisplayMonitors(None, None, MonitorEnumProc(_mon_cb), 0)
+
+        for hMon, mx1, my1, mx2, my2 in monitor_rects:
+            # For each edge, track the maximum intrusion of anchors on that edge.
+            # edge_extent[ABE_LEFT]   = max x2 of anchors closest to left edge
+            # edge_extent[ABE_RIGHT]  = min x1 of anchors closest to right edge
+            # edge_extent[ABE_TOP]    = max y2 of anchors closest to top edge
+            # edge_extent[ABE_BOTTOM] = min y1 of anchors closest to bottom edge
+            edge_extent = {}
+
+            for hwnd_a, anc_data in self.anchored_hwnds.items():
+                ax1, ay1, ax2, ay2 = anc_data["rect"]
+                if ax2 <= mx1 or ax1 >= mx2 or ay2 <= my1 or ay1 >= my2:
+                    continue
+                dist_left   = ax1 - mx1
+                dist_right  = mx2 - ax2
+                dist_top    = ay1 - my1
+                dist_bottom = my2 - ay2
+                min_dist = min(dist_left, dist_right, dist_top, dist_bottom)
+                if min_dist == dist_left:
+                    edge_extent[ABE_LEFT]   = max(edge_extent.get(ABE_LEFT,   ax2), ax2)
+                elif min_dist == dist_right:
+                    edge_extent[ABE_RIGHT]  = min(edge_extent.get(ABE_RIGHT,  ax1), ax1)
+                elif min_dist == dist_top:
+                    edge_extent[ABE_TOP]    = max(edge_extent.get(ABE_TOP,    ay2), ay2)
+                else:
+                    edge_extent[ABE_BOTTOM] = min(edge_extent.get(ABE_BOTTOM, ay1), ay1)
+
+            for edge, extent in edge_extent.items():
+                if edge == ABE_LEFT:
+                    appbar_rect = (mx1, my1, extent, my2)
+                elif edge == ABE_RIGHT:
+                    appbar_rect = (extent, my1, mx2, my2)
+                elif edge == ABE_TOP:
+                    appbar_rect = (mx1, my1, mx2, extent)
+                else:  # ABE_BOTTOM
+                    appbar_rect = (mx1, extent, mx2, my2)
+                key = f"{hMon}_{edge}"
+                self._create_appbar_win(key, edge, appbar_rect)
+
+        # AppBar registration broadcasts WM_SETTINGCHANGE asynchronously;
+        # the anchored window processes it later and reflows.  Re-assert its
+        # position at a few increasing delays to cover varying system speeds.
+        self._reassert_anchor_positions()
+        self.root.after(150, self._reassert_anchor_positions)
+        self.root.after(400, self._reassert_anchor_positions)
+
+    def _reassert_anchor_positions(self):
+        """Vrátí každé ukotvené okno na uloženou pozici (po změně work area)."""
+        WS_MAXIMIZE    = 0x01000000
+        GWL_STYLE      = -16
+        SWP_NOZORDER   = 0x0004
+        SWP_NOACTIVATE = 0x0010
+        for hwnd_a, anc_data in list(self.anchored_hwnds.items()):
+            ax1, ay1, ax2, ay2 = anc_data["rect"]
+            try:
+                style = User32.GetWindowLongW(hwnd_a, GWL_STYLE)
+                if style & WS_MAXIMIZE:
+                    User32.SetWindowLongW(hwnd_a, GWL_STYLE, style & ~WS_MAXIMIZE)
+                User32.SetWindowPos(hwnd_a, None, ax1, ay1,
+                                    ax2 - ax1, ay2 - ay1,
+                                    SWP_NOZORDER | SWP_NOACTIVATE)
+            except Exception:
+                pass
+
+    def _create_appbar_win(self, key, edge, appbar_rect):
+        """Vytvoří skryté pomocné okno a zaregistruje ho jako AppBar."""
+        helper = tk.Toplevel(self.root)
+        helper.overrideredirect(True)
+        helper.geometry("1x1+-32000+-32000")   # mimo obrazovku
+        helper.update_idletasks()
+        ab_hwnd = int(helper.winfo_id())
+
+        GWL_EXSTYLE      = -20
+        WS_EX_TOOLWINDOW = 0x00000080
+        WS_EX_NOACTIVATE = 0x08000000
+        WS_EX_TRANSPARENT = 0x00000020
+        old_ex = User32.GetWindowLongW(ab_hwnd, GWL_EXSTYLE)
+        User32.SetWindowLongW(ab_hwnd, GWL_EXSTYLE,
+            old_ex | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT)
+
+        abd = APPBARDATA()
+        abd.cbSize = ctypes.sizeof(APPBARDATA)
+        abd.hWnd = ab_hwnd
+        abd.uCallbackMessage = 0x8001   # WM_APP+1, callbacks ignorovány
+        abd.uEdge = edge
+        abd.rc.left   = appbar_rect[0]
+        abd.rc.top    = appbar_rect[1]
+        abd.rc.right  = appbar_rect[2]
+        abd.rc.bottom = appbar_rect[3]
+        abd.lParam = 0
+
+        Shell32.SHAppBarMessage(ABM_NEW,      ctypes.byref(abd))
+        Shell32.SHAppBarMessage(ABM_QUERYPOS, ctypes.byref(abd))
+        Shell32.SHAppBarMessage(ABM_SETPOS,   ctypes.byref(abd))
+
+        self._appbar_windows[key] = (helper, ab_hwnd)
+
+    def _remove_appbar_windows(self):
+        """Odregistruje a zničí všechna pomocná AppBar okna."""
+        for key, (helper, ab_hwnd) in list(self._appbar_windows.items()):
+            try:
+                abd = APPBARDATA()
+                abd.cbSize = ctypes.sizeof(APPBARDATA)
+                abd.hWnd = ab_hwnd
+                Shell32.SHAppBarMessage(ABM_REMOVE, ctypes.byref(abd))
+                helper.destroy()
+            except Exception:
+                pass
+        self._appbar_windows.clear()
+
+    def _restore_all_workareas(self):
+        """Obnoví pracovní plochu odregistrováním všech AppBar oken."""
+        self._remove_appbar_windows()
+
+    def _ensure_anchor_hook_running(self):
+        if self._anchor_hook_handle:
+            return
+        self._anchor_hook_thread = threading.Thread(target=self._run_anchor_hook, daemon=True)
+        self._anchor_hook_thread.start()
+
+    def _run_anchor_hook(self):
+        """Vlákno s WinEvent hookem – přizpůsobuje okna přes kotvy."""
+        import ctypes.wintypes
+
+        WinEventProcType = ctypes.WINFUNCTYPE(
+            None,
+            ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p,
+            ctypes.c_long, ctypes.c_long, ctypes.c_ulong, ctypes.c_ulong,
+        )
+        _in_callback = [False]
+
+        def _cb(hHook, event, hwnd, idObject, idChild, dwThread, dwTime):
+            if _in_callback[0] or not hwnd or idObject != 0:
+                return
+            if hwnd in self.anchored_hwnds:
+                # Update stored rect of the anchor itself when it moves
+                rect = RECT()
+                if User32.GetWindowRect(hwnd, ctypes.byref(rect)):
+                    if hwnd in self.anchored_hwnds:
+                        self.anchored_hwnds[hwnd]["rect"] = (rect.left, rect.top, rect.right, rect.bottom)
+                return
+            if not self.anchored_hwnds:
+                return
+            moved = RECT()
+            if not User32.GetWindowRect(hwnd, ctypes.byref(moved)):
+                return
+            bx1, by1, bx2, by2 = moved.left, moved.top, moved.right, moved.bottom
+            for anc_hwnd, anc_data in list(self.anchored_hwnds.items()):
+                ax1, ay1, ax2, ay2 = anc_data["rect"]
+                ox1 = max(ax1, bx1)
+                oy1 = max(ay1, by1)
+                ox2 = min(ax2, bx2)
+                oy2 = min(ay2, by2)
+                if ox1 >= ox2 or oy1 >= oy2:
+                    continue  # No overlap
+                ow, oh = ox2 - ox1, oy2 - oy1
+                new_x, new_y, new_w, new_h = bx1, by1, bx2 - bx1, by2 - by1
+                if ow >= oh:
+                    # Clip horizontally
+                    if bx1 < ax2 and bx2 > ax2:
+                        # B overlaps from the left into A → push B right edge to ax1 or left edge to ax2
+                        if bx1 < ax1:
+                            new_w = ax1 - bx1  # Clip B's right side
+                        else:
+                            new_x = ax2       # Clip B's left side
+                            new_w = bx2 - ax2
+                    elif bx2 > ax1 and bx1 < ax1:
+                        new_w = ax1 - bx1
+                else:
+                    # Clip vertically
+                    if by1 < ay2 and by2 > ay2:
+                        if by1 < ay1:
+                            new_h = ay1 - by1
+                        else:
+                            new_y = ay2
+                            new_h = by2 - ay2
+                    elif by2 > ay1 and by1 < ay1:
+                        new_h = ay1 - by1
+                if new_w > 100 and new_h > 60 and (new_x != bx1 or new_y != by1 or new_w != bx2-bx1 or new_h != by2-by1):
+                    _in_callback[0] = True
+                    try:
+                        User32.SetWindowPos(hwnd, None, new_x, new_y, new_w, new_h, SWP_NOZORDER_FLAG)
+                    finally:
+                        _in_callback[0] = False
+                break  # Apply one anchor clip per event
+
+        proc = WinEventProcType(_cb)
+        self._anchor_proc_ref = proc
+        hook = User32.SetWinEventHook(
+            EVENT_SYSTEM_MOVESIZEEND, EVENT_SYSTEM_MOVESIZEEND,
+            None, proc, 0, 0, WINEVENT_OUTOFCONTEXT,
+        )
+        self._anchor_hook_handle = hook
+
+        msg = ctypes.wintypes.MSG()
+        while True:
+            ret = User32.GetMessageW(ctypes.byref(msg), None, 0, 0)
+            if ret == 0 or ret == -1:
+                break
+            User32.TranslateMessage(ctypes.byref(msg))
+            User32.DispatchMessageW(ctypes.byref(msg))
+
+        if hook:
+            User32.UnhookWinEvent(hook)
+        self._anchor_hook_handle = None
 
     def on_item_activated(self, event=None):
         if not self.filtered_items:
@@ -1605,64 +2138,87 @@ class WindowSwitcherApp:
         activated_group = ""
         if _cur_tokens:
             first_token = _cur_tokens[0].lower()
-            if first_token == "_" or (first_token.startswith("gg") and len(first_token) > 2):
+            if first_token.startswith("gg") and len(first_token) > 2:
                 activated_group = first_token
 
         item = self.filtered_items[self.selected_index]
         self.hide_switcher()
         
         if item["type"] == "window":
-            # Add to group if specified
-            if "add_to_group" in item:
-                gname = item["add_to_group"]
-                if gname not in self.groups:
-                    self.groups[gname] = []
-                    
-                # To get info about item window
-                resolved_win = None
-                for w in self.all_windows:
-                    if w["hwnd"] == item["hwnd"]:
-                        resolved_win = w
-                        break
-                if not resolved_win:
-                    resolved_win = item
-                
-                # Retrieve or set a permanent random 32-bit WinSwitcherID
-                prop_id = User32.GetPropW(item["hwnd"], "WinSwitcherID")
-                if not prop_id:
-                    import random
-                    prop_id = random.randint(1000000, 99999999)
-                    User32.SetPropW(item["hwnd"], "WinSwitcherID", prop_id)
-                else:
-                    prop_id = int(prop_id)
-                
-                # Check for duplicates by WinSwitcherID (unique per window handle)
-                exists = False
-                for existing in self.groups[gname]:
-                    if isinstance(existing, dict):
-                        if existing.get("id") and prop_id and existing.get("id") == prop_id:
-                            exists = True
+            # --- aaa / aai multi-select handling ---
+            if item.get("aaa_mode") or item.get("aai_mode"):
+                gname = item.get("add_to_group", "")
+                is_exclusive = bool(item.get("aai_mode"))
+                # Determine which items to add: multi_selected set, or just cursor
+                indices_to_add = self.multi_selected if self.multi_selected else {self.selected_index}
+                self.multi_selected = set()
+                for add_idx in indices_to_add:
+                    if add_idx >= len(self.filtered_items):
+                        continue
+                    add_item = self.filtered_items[add_idx]
+                    if add_item.get("hwnd"):
+                        win_obj = next((w for w in self.all_windows if w["hwnd"] == add_item["hwnd"]), None)
+                        if win_obj:
+                            self._add_win_to_group(win_obj, gname)
+                            if is_exclusive:
+                                # Remove from all other groups
+                                for other_g in list(self.groups.keys()):
+                                    if other_g != gname and other_g != "_":
+                                        self._remove_win_from_group(win_obj, other_g)
+                # Activate the cursor window (item under cursor)
+                hwnd = item["hwnd"]
+            else:
+                # Add to group if specified (single window, normal mode)
+                if "add_to_group" in item:
+                    gname = item["add_to_group"]
+                    if gname not in self.groups:
+                        self.groups[gname] = []
+                        
+                    # To get info about item window
+                    resolved_win = None
+                    for w in self.all_windows:
+                        if w["hwnd"] == item["hwnd"]:
+                            resolved_win = w
                             break
+                    if not resolved_win:
+                        resolved_win = item
+                    
+                    # Retrieve or set a permanent random 32-bit WinSwitcherID
+                    prop_id = User32.GetPropW(item["hwnd"], "WinSwitcherID")
+                    if not prop_id:
+                        import random
+                        prop_id = random.randint(1000000, 99999999)
+                        User32.SetPropW(item["hwnd"], "WinSwitcherID", prop_id)
                     else:
-                        if existing == resolved_win.get("title"):
-                            exists = True
-                            break
-                
-                if not exists:
-                    self.groups[gname].append({
-                        "id": prop_id,
-                        "process": resolved_win.get("process", ""),
-                        "class": resolved_win.get("class", ""),
-                        "title": resolved_win.get("title", "")
-                    })
-                    self.save_groups()
+                        prop_id = int(prop_id)
                     
-                # Register to runtime cache
-                if gname not in self.runtime_hwnd_to_groups:
-                    self.runtime_hwnd_to_groups[gname] = set()
-                self.runtime_hwnd_to_groups[gname].add(item["hwnd"])
+                    # Check for duplicates by WinSwitcherID (unique per window handle)
+                    exists = False
+                    for existing in self.groups[gname]:
+                        if isinstance(existing, dict):
+                            if existing.get("id") and prop_id and existing.get("id") == prop_id:
+                                exists = True
+                                break
+                        else:
+                            if existing == resolved_win.get("title"):
+                                exists = True
+                                break
                     
-            hwnd = item["hwnd"]
+                    if not exists:
+                        self.groups[gname].append({
+                            "id": prop_id,
+                            "process": resolved_win.get("process", ""),
+                            "class": resolved_win.get("class", ""),
+                            "title": resolved_win.get("title", "")
+                        })
+                        self.save_groups()
+                        
+                    # Register to runtime cache
+                    if gname not in self.runtime_hwnd_to_groups:
+                        self.runtime_hwnd_to_groups[gname] = set()
+                    self.runtime_hwnd_to_groups[gname].add(item["hwnd"])
+                hwnd = item["hwnd"]
+                    
             if User32.IsIconic(hwnd):
                 User32.ShowWindow(hwnd, SW_RESTORE)
             else:
@@ -1681,6 +2237,7 @@ class WindowSwitcherApp:
             if activated_group != self.last_activated_group:
                 self.declined_new_windows.clear()
             self.last_activated_group = activated_group
+            self._update_taskbar_visibility(activated_group)
             self.activated_windows_hwnds = set(w["hwnd"] for w in self.all_windows)
             self.root.after(0, lambda g=activated_group: self._update_tray(g))
             self.root.after(0, lambda g=activated_group: self._update_osd(g))
@@ -1753,6 +2310,7 @@ class WindowSwitcherApp:
                         "title": self.prev_active_title
                     })
                     self.save_groups()
+                    self._refresh_window_group_titles()
                     
                 # Cache HWND
                 if gname not in self.runtime_hwnd_to_groups:
@@ -1771,6 +2329,7 @@ class WindowSwitcherApp:
                 if activated_group != self.last_activated_group:
                     self.declined_new_windows.clear()
                 self.last_activated_group = activated_group
+                self._update_taskbar_visibility(activated_group)
                 self.activated_windows_hwnds = set(w["hwnd"] for w in self.all_windows)
                 self.root.after(0, lambda g=activated_group: self._update_tray(g))
                 self.root.after(0, lambda g=activated_group: self._update_osd(g))
@@ -1810,6 +2369,7 @@ class WindowSwitcherApp:
                     if not self.groups[gname] and gname != "_":
                         del self.groups[gname]
                     self.save_groups()
+                    self._refresh_window_group_titles()
                 # Cache HWND remove
                 if gname in self.runtime_hwnd_to_groups:
                     self.runtime_hwnd_to_groups[gname].discard(self.prev_active_hwnd)
@@ -1826,6 +2386,7 @@ class WindowSwitcherApp:
                 if activated_group != self.last_activated_group:
                     self.declined_new_windows.clear()
                 self.last_activated_group = activated_group
+                self._update_taskbar_visibility(activated_group)
                 self.activated_windows_hwnds = set(w["hwnd"] for w in self.all_windows)
                 self.root.after(0, lambda g=activated_group: self._update_tray(g))
                 self.root.after(0, lambda g=activated_group: self._update_osd(g))
@@ -1875,6 +2436,7 @@ class WindowSwitcherApp:
                 if self.last_activated_group == gname:
                     self.last_activated_group = ""
                 self.save_groups()
+                self._refresh_window_group_titles()
                 self.status_label.config(text=f"Skupina '{gname}' smazána.")
 
         elif item["type"] == "ask_add_to_group":
@@ -1890,6 +2452,15 @@ class WindowSwitcherApp:
                     User32.ShowWindow(hwnd, SW_RESTORE)
                 User32.SetForegroundWindow(hwnd)
                 User32.BringWindowToTop(hwnd)
+
+        elif item["type"] == "anchor_window":
+            target_hwnd = self.prev_active_hwnd
+            if not target_hwnd:
+                return
+            if target_hwnd in self.anchored_hwnds:
+                self._unanchor_window(target_hwnd)
+            else:
+                self._anchor_window(target_hwnd, item.get("group_ctx"), item.get("global_anchor", False))
 
     def listen_global_hotkey(self):
         HOTKEY_ID = 2411
@@ -1926,10 +2497,148 @@ class WindowSwitcherApp:
         finally:
             User32.UnregisterHotKey(None, HOTKEY_ID)
 
+    # --- ITaskbarList COM helpers ---
+
+    def _init_taskbar_com(self):
+        try:
+            Ole32 = ctypes.windll.ole32
+            Ole32.CoInitialize(None)
+            Ole32.CoCreateInstance.restype = ctypes.HRESULT
+            p = ctypes.c_void_p()
+            hr = Ole32.CoCreateInstance(
+                ctypes.byref(_CLSID_TaskbarList), None, 1,
+                ctypes.byref(_IID_ITaskbarList), ctypes.byref(p)
+            )
+            if hr == 0 and p:
+                vtbl_ptr = ctypes.cast(p, ctypes.POINTER(ctypes.c_void_p))
+                vtbl = ctypes.cast(vtbl_ptr[0], ctypes.POINTER(ctypes.c_void_p))
+                HrInit = ctypes.WINFUNCTYPE(ctypes.HRESULT, ctypes.c_void_p)(vtbl[3])
+                HrInit(p)
+                self._taskbar_com_obj = p
+                self._taskbar_vtable = vtbl
+        except Exception as e:
+            print(f"Taskbar COM init failed: {e}")
+        # Always restore windows hidden by a previous session
+        self._restore_stale_hidden_windows()
+        # Safety net for legacy sessions: when app starts outside any group,
+        # ensure all normal windows have taskbar buttons visible.
+        self._force_show_all_taskbar_tabs()
+
+    def _taskbar_delete_tab(self, hwnd):
+        try:
+            # Remove from taskbar via COM
+            if self.hide_taskbar_icons and self._taskbar_com_obj and self._taskbar_vtable:
+                fn = ctypes.WINFUNCTYPE(ctypes.HRESULT, ctypes.c_void_p, ctypes.c_void_p)(self._taskbar_vtable[5])
+                fn(self._taskbar_com_obj, hwnd)
+                User32.SetPropW(hwnd, "WinSwitcherTaskbarHidden", ctypes.c_void_p(1))
+            # Hide from Alt+Tab via WS_EX_TOOLWINDOW
+            if self.hide_alttab_icons:
+                ex = User32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+                self._taskbar_hidden_ex_styles[hwnd] = ex
+                # Persist original ex_style as a window property so it survives app restart
+                User32.SetPropW(hwnd, "WinSwitcherExStyle", ctypes.c_void_p(ex & 0xFFFFFFFF))
+                User32.SetWindowLongW(hwnd, GWL_EXSTYLE, (ex | WS_EX_TOOLWINDOW) & ~WS_EX_APPWINDOW)
+        except Exception:
+            pass
+
+    def _taskbar_add_tab(self, hwnd):
+        try:
+            # Restore original extended style (removes WS_EX_TOOLWINDOW)
+            if self.hide_alttab_icons:
+                if hwnd in self._taskbar_hidden_ex_styles:
+                    User32.SetWindowLongW(hwnd, GWL_EXSTYLE, self._taskbar_hidden_ex_styles.pop(hwnd))
+                else:
+                    saved = User32.GetPropW(hwnd, "WinSwitcherExStyle")
+                    if saved is not None:
+                        User32.SetWindowLongW(hwnd, GWL_EXSTYLE, int(saved) & 0xFFFFFFFF)
+                User32.RemovePropW(hwnd, "WinSwitcherExStyle")
+                # Notify shell about ex_style change
+                User32.SetWindowPos(hwnd, None, 0, 0, 0, 0, 0x0037)  # NOSIZE|NOMOVE|NOZORDER|NOACTIVATE|FRAMECHANGED
+            # Add back to taskbar via COM
+            if self._taskbar_com_obj and self._taskbar_vtable:
+                fn = ctypes.WINFUNCTYPE(ctypes.HRESULT, ctypes.c_void_p, ctypes.c_void_p)(self._taskbar_vtable[4])
+                fn(self._taskbar_com_obj, hwnd)
+            User32.RemovePropW(hwnd, "WinSwitcherTaskbarHidden")
+        except Exception:
+            pass
+
+    def _restore_stale_hidden_windows(self):
+        """On startup: restore windows hidden by a previous session via persisted window properties."""
+        # Collect hwnds first (safe inside EnumWindows), then process outside
+        hwnds_to_restore = []
+        def enum_cb(hwnd, _):
+            try:
+                saved_ex = User32.GetPropW(hwnd, "WinSwitcherExStyle")
+                saved_tab = User32.GetPropW(hwnd, "WinSwitcherTaskbarHidden")
+                if saved_ex or saved_tab:
+                    original_ex = (int(saved_ex) & 0xFFFFFFFF) if saved_ex else None
+                    hwnds_to_restore.append((hwnd, original_ex, bool(saved_tab)))
+            except Exception:
+                pass
+            return True
+        try:
+            User32.EnumWindows(WNDENUMPROC(enum_cb), None)
+        except Exception:
+            pass
+        for hwnd, original_ex, had_taskbar_hidden in hwnds_to_restore:
+            try:
+                if original_ex is not None:
+                    User32.SetWindowLongW(hwnd, GWL_EXSTYLE, original_ex)
+                    # SWP_NOSIZE|SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE|SWP_FRAMECHANGED = 0x0037
+                    User32.SetWindowPos(hwnd, None, 0, 0, 0, 0, 0x0037)
+                User32.RemovePropW(hwnd, "WinSwitcherExStyle")
+                if had_taskbar_hidden and self._taskbar_com_obj and self._taskbar_vtable:
+                    fn = ctypes.WINFUNCTYPE(ctypes.HRESULT, ctypes.c_void_p, ctypes.c_void_p)(self._taskbar_vtable[4])
+                    fn(self._taskbar_com_obj, hwnd)
+                User32.RemovePropW(hwnd, "WinSwitcherTaskbarHidden")
+            except Exception:
+                pass
+
+    def _force_show_all_taskbar_tabs(self):
+        """Startup safety net: force AddTab on normal top-level windows."""
+        if not (self._taskbar_com_obj and self._taskbar_vtable):
+            return
+        try:
+            fn = ctypes.WINFUNCTYPE(ctypes.HRESULT, ctypes.c_void_p, ctypes.c_void_p)(self._taskbar_vtable[4])
+            for win in self.get_open_windows():
+                hwnd = win.get("hwnd")
+                if hwnd:
+                    fn(self._taskbar_com_obj, hwnd)
+        except Exception:
+            pass
+
+    def _update_taskbar_visibility(self, group_name):
+        """Show taskbar icons for windows in group_name, hide all others."""
+        if not (self.hide_taskbar_icons or self.hide_alttab_icons):
+            return
+        show_all = not group_name or group_name == "_"
+        if show_all:
+            self._restore_all_taskbar_icons()
+            return
+        for win in self.all_windows:
+            hwnd = win.get("hwnd")
+            if not hwnd:
+                continue
+            if self.is_window_in_group(win, group_name):
+                if hwnd in self._taskbar_hidden_hwnds:
+                    self._taskbar_add_tab(hwnd)
+                    self._taskbar_hidden_hwnds.discard(hwnd)
+            else:
+                if hwnd not in self._taskbar_hidden_hwnds:
+                    self._taskbar_delete_tab(hwnd)
+                    self._taskbar_hidden_hwnds.add(hwnd)
+
+    def _restore_all_taskbar_icons(self):
+        for hwnd in list(self._taskbar_hidden_hwnds):
+            self._taskbar_add_tab(hwnd)
+        self._taskbar_hidden_hwnds.clear()
+
     def quit_app(self):
         self.hotkey_running = False
         self.clear_all_row_thumbnails()
         self.clear_thumbnail()
+        self._restore_all_taskbar_icons()
+        self._restore_all_workareas()
         if self.tray_icon:
             self.tray_icon.stop()
         User32.PostQuitMessage(0)
