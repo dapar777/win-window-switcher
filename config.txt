@@ -30,3 +30,9 @@ hotkey_key f12
 
 # Chování při vzniku nového okna, pokud je aktivní skupina (never / ask / always)
 new_window_action ask
+
+# Skrývat ikony na hlavním panelu pro okna mimo aktivní skupinu (true / false)
+hide_taskbar_icons true
+
+# Skrývat okna mimo aktivní skupinu i v přepínání Alt+Tab (true / false)
+hide_alttab_icons true
