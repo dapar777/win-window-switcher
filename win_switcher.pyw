@@ -341,12 +341,17 @@ class WindowSwitcherApp:
         y = my + mh - h - 4
         win.geometry(f"+{x}+{y}")
 
-    def _update_osd(self, group_name):
+    def _update_osd(self, group_name, _reassert=False):
         label = group_name if group_name else ""
         if label:
             for osd_entry in self.osd_windows:
                 self._osd_reposition_one(osd_entry, label)
                 osd_entry["win"].deiconify()
+                osd_entry["win"].lift()
+                osd_entry["win"].attributes("-topmost", True)
+            if not _reassert:
+                # Re-assert po 300 ms – opravuje multimonitor compositor lag
+                self.root.after(300, lambda g=group_name: self._update_osd(g, _reassert=True))
         else:
             for osd_entry in self.osd_windows:
                 osd_entry["win"].withdraw()
@@ -1224,8 +1229,7 @@ class WindowSwitcherApp:
             row_frame = tk.Frame(self.scroll_rows_frame, bg=bg, bd=0, padx=5, pady=4)
             row_frame.pack(fill=tk.X, expand=True)
             
-            row_frame.bind("<Button-1>", lambda e, idx=idx: self.select_row_by_index(idx))
-            row_frame.bind("<Double-Button-1>", lambda e: self.on_item_activated())
+            row_frame.bind("<Button-1>", lambda e, idx=idx: self._on_row_click(idx))
             
             if self.show_list_thumbnails and item["type"] == "window":
                 # Create a mini dynamic live DWM Thumbnail container on the left, scaled dynamically via list_thumbnail_scale config (default 48x30, multiplied by list_thumbnail_scale)
@@ -1243,8 +1247,7 @@ class WindowSwitcherApp:
                     highlightbackground="#4e4e5a"
                 )
                 mini_canvas.pack(side=tk.LEFT, padx=(5, 10))
-                mini_canvas.bind("<Button-1>", lambda e, idx=idx: self.select_row_by_index(idx))
-                mini_canvas.bind("<Double-Button-1>", lambda e: self.on_item_activated())
+                mini_canvas.bind("<Button-1>", lambda e, idx=idx: self._on_row_click(idx))
                 
                 # Thumbnaily renderuj až 150ms po zastavení psaní (přeskočí zbytečné registrace DWM při psaní)
                 self.root.after(150, lambda mc=mini_canvas, hwnd=item["hwnd"]: self.render_row_thumbnail(mc, hwnd))
@@ -1266,7 +1269,7 @@ class WindowSwitcherApp:
                     width=4
                 )
                 icon_lbl.pack(side=tk.LEFT, padx=(5, 10))
-                icon_lbl.bind("<Button-1>", lambda e, idx=idx: self.select_row_by_index(idx))
+                icon_lbl.bind("<Button-1>", lambda e, idx=idx: self._on_row_click(idx))
 
             # Build display title (prepend 📌 for anchored windows in normal mode)
             display_title = item["title"]
@@ -1284,8 +1287,7 @@ class WindowSwitcherApp:
                 justify="left"
             )
             title_lbl.pack(side=tk.LEFT, fill=tk.X, expand=True)
-            title_lbl.bind("<Button-1>", lambda e, idx=idx: self.select_row_by_index(idx))
-            title_lbl.bind("<Double-Button-1>", lambda e: self.on_item_activated())
+            title_lbl.bind("<Button-1>", lambda e, idx=idx: self._on_row_click(idx))
             
         self.render_side_preview()
         self.scroll_into_view()
@@ -1293,6 +1295,16 @@ class WindowSwitcherApp:
     def select_row_by_index(self, idx):
         self.selected_index = idx
         self.render_rows()
+
+    def _on_row_click(self, idx):
+        """Jednoklik na řádek: vybere + aktivuje (v aaa/aai módu jen vybere)."""
+        self.selected_index = idx
+        self.render_rows()
+        if self.filtered_items and idx < len(self.filtered_items):
+            item = self.filtered_items[idx]
+            if item.get("aaa_mode") or item.get("aai_mode"):
+                return  # v módu přidávání klik jen pozicuje kurzor
+        self.on_item_activated()
 
     def on_canvas_scroll(self, *args):
         self.list_scrollbar.set(*args)
@@ -2225,9 +2237,15 @@ class WindowSwitcherApp:
                 User32.ShowWindow(hwnd, SW_SHOW)
 
             # Pokud přepínáme do skupiny, minimalizujeme všechna okna mimo ni
-            if activated_group:
+            # Přesná množina HWND ze zobrazené skupiny – vyhne se chybám přemapování ID
+            group_hwnds = (
+                {it["hwnd"] for it in self.filtered_items if it.get("hwnd") and it["type"] == "window"}
+                if activated_group else None
+            )
+
+            if activated_group and group_hwnds is not None:
                 for w in self.all_windows:
-                    if w["hwnd"] != hwnd and not self.is_window_in_group(w, activated_group):
+                    if w["hwnd"] != hwnd and w["hwnd"] not in group_hwnds:
                         User32.ShowWindow(w["hwnd"], 6)  # SW_MINIMIZE
 
             User32.SetForegroundWindow(hwnd)
@@ -2237,7 +2255,7 @@ class WindowSwitcherApp:
             if activated_group != self.last_activated_group:
                 self.declined_new_windows.clear()
             self.last_activated_group = activated_group
-            self._update_taskbar_visibility(activated_group)
+            self._update_taskbar_visibility(activated_group, explicit_hwnds=group_hwnds)
             self.activated_windows_hwnds = set(w["hwnd"] for w in self.all_windows)
             self.root.after(0, lambda g=activated_group: self._update_tray(g))
             self.root.after(0, lambda g=activated_group: self._update_osd(g))
@@ -2607,8 +2625,10 @@ class WindowSwitcherApp:
         except Exception:
             pass
 
-    def _update_taskbar_visibility(self, group_name):
-        """Show taskbar icons for windows in group_name, hide all others."""
+    def _update_taskbar_visibility(self, group_name, explicit_hwnds=None):
+        """Show taskbar icons for windows in group_name, hide all others.
+        explicit_hwnds: pokud je zadána, použije se tato přesná množina místo is_window_in_group.
+        """
         if not (self.hide_taskbar_icons or self.hide_alttab_icons):
             return
         show_all = not group_name or group_name == "_"
@@ -2619,7 +2639,8 @@ class WindowSwitcherApp:
             hwnd = win.get("hwnd")
             if not hwnd:
                 continue
-            if self.is_window_in_group(win, group_name):
+            in_group = (hwnd in explicit_hwnds) if explicit_hwnds is not None else self.is_window_in_group(win, group_name)
+            if in_group:
                 if hwnd in self._taskbar_hidden_hwnds:
                     self._taskbar_add_tab(hwnd)
                     self._taskbar_hidden_hwnds.discard(hwnd)
