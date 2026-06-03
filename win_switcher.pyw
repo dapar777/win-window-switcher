@@ -486,6 +486,10 @@ class WindowSwitcherApp:
                                 self.hotkey_vk = 0x14
                             elif kv == "space":
                                 self.hotkey_vk = 0x20
+                            elif len(kv) == 1 and kv.isalpha():
+                                self.hotkey_vk = ord(kv.upper())
+                            elif len(kv) == 1 and kv.isdigit():
+                                self.hotkey_vk = ord(kv)
                             elif kv.startswith("f") and kv[1:].isdigit():
                                 fn = int(kv[1:])
                                 if 1 <= fn <= 24:
@@ -1899,6 +1903,8 @@ class WindowSwitcherApp:
         if not hwnd:
             return
         User32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE_FLAG)
+        # Persist anchor flag so startup cleanup can find stale topmost windows after crash/kill
+        User32.SetPropW(hwnd, "WinSwitcherAnchored", ctypes.c_void_p(1))
         rect = RECT()
         User32.GetWindowRect(hwnd, ctypes.byref(rect))
         self.anchored_hwnds[hwnd] = {
@@ -1913,6 +1919,7 @@ class WindowSwitcherApp:
         """Odkotvit okno: vrátí HWND_NOTOPMOST a obnoví work area."""
         if hwnd in self.anchored_hwnds:
             User32.SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE_FLAG)
+            User32.RemovePropW(hwnd, "WinSwitcherAnchored")
             del self.anchored_hwnds[hwnd]
         self._apply_anchor_workarea()  # Recompute with remaining anchors (or full restore)
 
@@ -2045,7 +2052,15 @@ class WindowSwitcherApp:
         self._appbar_windows.clear()
 
     def _restore_all_workareas(self):
-        """Obnoví pracovní plochu odregistrováním všech AppBar oken."""
+        """Obnoví pracovní plochu odregistrováním všech AppBar oken.
+        Také odstraňuje TOPMOST ze všech dosud ukotvených oken."""
+        for hwnd in list(self.anchored_hwnds.keys()):
+            try:
+                User32.SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE_FLAG)
+                User32.RemovePropW(hwnd, "WinSwitcherAnchored")
+            except Exception:
+                pass
+        self.anchored_hwnds.clear()
         self._remove_appbar_windows()
 
     def _ensure_anchor_hook_running(self):
@@ -2538,6 +2553,8 @@ class WindowSwitcherApp:
             print(f"Taskbar COM init failed: {e}")
         # Always restore windows hidden by a previous session
         self._restore_stale_hidden_windows()
+        # Remove TOPMOST from windows anchored by a previous session (crash/kill cleanup)
+        self._restore_stale_anchored_windows()
         # Safety net for legacy sessions: when app starts outside any group,
         # ensure all normal windows have taskbar buttons visible.
         self._force_show_all_taskbar_tabs()
@@ -2624,6 +2641,28 @@ class WindowSwitcherApp:
                     fn(self._taskbar_com_obj, hwnd)
         except Exception:
             pass
+
+    def _restore_stale_anchored_windows(self):
+        """Startup cleanup: odstraňuje TOPMOST z oken ukotvených předešlou sessioní
+        (přežila restart/kill switcheru bez čistého ukončení)."""
+        hwnds_to_fix = []
+        def enum_cb(hwnd, _):
+            try:
+                if User32.GetPropW(hwnd, "WinSwitcherAnchored"):
+                    hwnds_to_fix.append(hwnd)
+            except Exception:
+                pass
+            return True
+        try:
+            User32.EnumWindows(WNDENUMPROC(enum_cb), None)
+        except Exception:
+            pass
+        for hwnd in hwnds_to_fix:
+            try:
+                User32.SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE_FLAG)
+                User32.RemovePropW(hwnd, "WinSwitcherAnchored")
+            except Exception:
+                pass
 
     def _update_taskbar_visibility(self, group_name, explicit_hwnds=None):
         """Show taskbar icons for windows in group_name, hide all others.
