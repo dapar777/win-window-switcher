@@ -2662,6 +2662,9 @@ class WindowSwitcherApp:
                 # Persist original ex_style as a window property so it survives app restart
                 User32.SetPropW(hwnd, "WinSwitcherExStyle", ctypes.c_void_p(ex & 0xFFFFFFFF))
                 User32.SetWindowLongW(hwnd, GWL_EXSTYLE, (ex | WS_EX_TOOLWINDOW) & ~WS_EX_APPWINDOW)
+                # Notify shell about the style change (SWP_NOSIZE|NOMOVE|NOZORDER|NOACTIVATE|FRAMECHANGED)
+                # Without this Teams, Outlook and similar apps ignore the WS_EX_TOOLWINDOW change
+                User32.SetWindowPos(hwnd, None, 0, 0, 0, 0, 0x0037)
         except Exception:
             pass
 
