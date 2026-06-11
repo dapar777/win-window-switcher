@@ -2129,6 +2129,11 @@ class WindowSwitcherApp:
         Pokud okno není v aktivní skupině, vyjde ze skupiny."""
         if not self.last_activated_group:
             return
+        # Pokud fokus mezitím přešel jinam, event byl přechodný (např. dočasný fokus
+        # při skrývání switcheru během aktivace skupiny) – ignoruj ho.
+        current_fg = User32.GetForegroundWindow()
+        if current_fg != hwnd:
+            return
         # Hledáme okno v kešovaném seznamu
         win_obj = next((w for w in self.all_windows if w.get("hwnd") == hwnd), None)
         if win_obj is None:
