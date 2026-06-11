@@ -2333,11 +2333,19 @@ class WindowSwitcherApp:
                 User32.ShowWindow(hwnd, SW_SHOW)
 
             # Pokud přepínáme do skupiny, minimalizujeme všechna okna mimo ni
-            # Přesná množina HWND ze zobrazené skupiny – vyhne se chybám přemapování ID
-            group_hwnds = (
-                {it["hwnd"] for it in self.filtered_items if it.get("hwnd") and it["type"] == "window"}
-                if activated_group else None
-            )
+            # V aaa/aai módu filtered_items obsahuje okna MIMO skupinu (kandidáti k přidání),
+            # takže group_hwnds musíme vzít z runtime cache skupiny, ne z filtered_items.
+            if item.get("aaa_mode") or item.get("aai_mode"):
+                aaa_gname = item.get("add_to_group", "")
+                group_hwnds = (
+                    set(self.runtime_hwnd_to_groups.get(aaa_gname, set()))
+                    if activated_group else None
+                )
+            else:
+                group_hwnds = (
+                    {it["hwnd"] for it in self.filtered_items if it.get("hwnd") and it["type"] == "window"}
+                    if activated_group else None
+                )
 
             if activated_group and group_hwnds is not None:
                 for w in self.all_windows:
