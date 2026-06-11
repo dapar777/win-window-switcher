@@ -233,6 +233,10 @@ class WindowSwitcherApp:
         self._anchor_hook_thread = None
         self._original_workareas = {}      # kept for compat but unused
         self._appbar_windows = {}          # key -> (helper_toplevel, hwnd)
+        # Foreground-change group exit detection
+        self._fg_hook_thread = None
+        self._fg_proc_ref = None
+        self._fg_hook_handle = None
         self.load_groups()
         # Promazání skupin při každém startu – řízeno přepínačem --keep-groups
         if not keep_groups:
@@ -263,6 +267,10 @@ class WindowSwitcherApp:
         self.tray_icon = None
         self.tray_thread = threading.Thread(target=self._run_tray, daemon=True)
         self.tray_thread.start()
+
+        # Foreground window tracking – auto-exit group when user switches outside it
+        self._fg_hook_thread = threading.Thread(target=self._run_foreground_hook, daemon=True)
+        self._fg_hook_thread.start()
 
         # OSD overlay - trvalé zobrazení názvu skupiny na všech monitorech
         self.osd_windows = []  # seznam OSD oken pro každý monitor
@@ -2068,6 +2076,74 @@ class WindowSwitcherApp:
             return
         self._anchor_hook_thread = threading.Thread(target=self._run_anchor_hook, daemon=True)
         self._anchor_hook_thread.start()
+
+    def _run_foreground_hook(self):
+        """Vlákno s WinEvent hookem pro EVENT_SYSTEM_FOREGROUND.
+        Pokud uživatel přepne na okno mimo aktivní skupinu (mimo switcher),
+        automaticky odchází ze skupiny."""
+        import ctypes.wintypes
+        EVENT_SYSTEM_FOREGROUND = 0x0003
+        my_pid = os.getpid()
+
+        WinEventProcType = ctypes.WINFUNCTYPE(
+            None,
+            ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p,
+            ctypes.c_long, ctypes.c_long, ctypes.c_ulong, ctypes.c_ulong,
+        )
+
+        def _cb(hHook, event, hwnd, idObject, idChild, dwThread, dwTime):
+            if not hwnd:
+                return
+            if not self.last_activated_group:
+                return
+            # Ignoruj okna našeho vlastního procesu (switcher, dialogy, tray)
+            pid = ctypes.c_ulong(0)
+            User32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            if pid.value == my_pid:
+                return
+            # Plánuj kontrolu na hlavním vlákně (thread-safe přístup k tk a all_windows)
+            self.root.after(0, lambda h=hwnd: self._check_fg_for_group_exit(h))
+
+        proc = WinEventProcType(_cb)
+        self._fg_proc_ref = proc
+        hook = User32.SetWinEventHook(
+            EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND,
+            None, proc, 0, 0, WINEVENT_OUTOFCONTEXT,
+        )
+        self._fg_hook_handle = hook
+
+        msg = ctypes.wintypes.MSG()
+        while True:
+            ret = User32.GetMessageW(ctypes.byref(msg), None, 0, 0)
+            if ret == 0 or ret == -1:
+                break
+            User32.TranslateMessage(ctypes.byref(msg))
+            User32.DispatchMessageW(ctypes.byref(msg))
+
+        if hook:
+            User32.UnhookWinEvent(hook)
+        self._fg_hook_handle = None
+
+    def _check_fg_for_group_exit(self, hwnd):
+        """Spouští se na hlavním vlákně po změně foreground okna.
+        Pokud okno není v aktivní skupině, vyjde ze skupiny."""
+        if not self.last_activated_group:
+            return
+        # Hledáme okno v kešovaném seznamu
+        win_obj = next((w for w in self.all_windows if w.get("hwnd") == hwnd), None)
+        if win_obj is None:
+            # Okno není v našem seznamu – je to externí okno mimo skupinu
+            self._leave_active_group()
+            return
+        if not self.is_window_in_group(win_obj, self.last_activated_group):
+            self._leave_active_group()
+
+    def _leave_active_group(self):
+        """Opustí aktivní skupinu: obnoví taskbar, tray a OSD."""
+        self.last_activated_group = ""
+        self._restore_all_taskbar_icons()
+        self.root.after(0, lambda: self._update_tray(""))
+        self.root.after(0, lambda: self._update_osd(""))
 
     def _run_anchor_hook(self):
         """Vlákno s WinEvent hookem – přizpůsobuje okna přes kotvy."""
