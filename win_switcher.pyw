@@ -2124,6 +2124,21 @@ class WindowSwitcherApp:
             User32.UnhookWinEvent(hook)
         self._fg_hook_handle = None
 
+    # Systémové překryvné třídy, které NESMÍ způsobit odchod ze skupiny.
+    # Jsou to přechodná UI (Alt+Tab, Task View, taskbar thumbnail, search, atd.)
+    _SYSTEM_OVERLAY_CLASSES = frozenset({
+        "MultitaskingViewFrame",       # Win10/11 Alt+Tab / Task View
+        "XamlExplorerHostIslandWindow",# část moderního Task View (XAML island)
+        "TaskSwitcherWnd",             # klasický Alt+Tab (starší Windows)
+        "TaskListThumbnailWnd",        # náhled na hlavním panelu
+        "Shell_TrayWnd",               # hlavní panel (taskbar)
+        "NotifyIconOverflowWindow",    # přetečení systémové lišty
+        "Windows.UI.Core.CoreWindow",  # UWP systémová okna
+        "ApplicationFrameWindow",      # UWP rámec (jen přechodně)
+        "SearchApp",                   # Windows Search overlay
+        "SearchUI",                    # starší Windows Search
+    })
+
     def _check_fg_for_group_exit(self, hwnd):
         """Spouští se na hlavním vlákně po změně foreground okna.
         Pokud okno není v aktivní skupině, vyjde ze skupiny."""
@@ -2133,6 +2148,11 @@ class WindowSwitcherApp:
         # při skrývání switcheru během aktivace skupiny) – ignoruj ho.
         current_fg = User32.GetForegroundWindow()
         if current_fg != hwnd:
+            return
+        # Ignoruj systémové překryvné třídy (Alt+Tab, Task View, taskbar, …)
+        class_buf = ctypes.create_unicode_buffer(256)
+        User32.GetClassNameW(hwnd, class_buf, 256)
+        if class_buf.value in self._SYSTEM_OVERLAY_CLASSES:
             return
         # Hledáme okno v kešovaném seznamu
         win_obj = next((w for w in self.all_windows if w.get("hwnd") == hwnd), None)
