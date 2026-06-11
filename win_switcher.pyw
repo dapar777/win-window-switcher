@@ -2150,9 +2150,9 @@ class WindowSwitcherApp:
         # Hledáme okno v kešovaném seznamu
         win_obj = next((w for w in self.all_windows if w.get("hwnd") == hwnd), None)
         if win_obj is None:
-            # Reálné aplikační okno, které není v naší cache – bylo otevřeno po posledním
-            # otevření switcheru. Vyskočíme ze skupiny.
-            self._leave_active_group()
+            # Okno není v naší cache – bylo otevřeno po posledním refreshi switcheru.
+            # Skupinu neopouštíme: _watch_new_windows se postará o ask/add logiku.
+            # Odchod ze skupiny se provede jen pro ZNÁMÁ okna potvrzeně mimo skupinu.
             return
         if not self.is_window_in_group(win_obj, self.last_activated_group):
             self._leave_active_group()
