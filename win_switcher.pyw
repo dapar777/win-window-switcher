@@ -358,8 +358,13 @@ class WindowSwitcherApp:
                 osd_entry["win"].lift()
                 osd_entry["win"].attributes("-topmost", True)
             if not _reassert:
-                # Re-assert po 300 ms – opravuje multimonitor compositor lag
-                self.root.after(300, lambda g=group_name: self._update_osd(g, _reassert=True))
+                # Re-assert po 300 ms – opravuje multimonitor compositor lag.
+                # Kontrolujeme, že skupina stále souhlasit – zabránííme zobrazení
+                # starého nápisu po tom, co uživatel skupinu opustil.
+                def _deferred_reassert(g=group_name):
+                    if self.last_activated_group == g:
+                        self._update_osd(g, _reassert=True)
+                self.root.after(300, _deferred_reassert)
         else:
             for osd_entry in self.osd_windows:
                 osd_entry["win"].withdraw()
@@ -2152,8 +2157,12 @@ class WindowSwitcherApp:
         if win_obj is None:
             # Okno není v naší cache – bylo otevřeno po posledním refreshi switcheru.
             # Skupinu neopouštíme: _watch_new_windows se postará o ask/add logiku.
-            # Odchod ze skupiny se provede jen pro ZNÁMÁ okna potvrzeně mimo skupinu.
             return
+        # Primární kontrola: runtime HWND cache (nejrychlejší a nejspolehlivější).
+        # Brání falešnému odchodu ze skupiny u oken se změněným HWND (PL/SQL, atd.)
+        if hwnd in self.runtime_hwnd_to_groups.get(self.last_activated_group, set()):
+            return  # okno je ve skupině dle runtime cache – nijak nereagujeme
+        # Sekundární kontrola přes is_window_in_group (může také update runtime cache)
         if not self.is_window_in_group(win_obj, self.last_activated_group):
             self._leave_active_group()
 
