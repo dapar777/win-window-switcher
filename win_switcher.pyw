@@ -212,6 +212,7 @@ class WindowSwitcherApp:
         self.last_activated_group = ""
         self.activated_windows_hwnds = set()  # HWNDs seen when group was last activated
         self.declined_new_windows = set()    # HWNDs user declined to add (reset on group switch)
+        self._pending_ask_hwnds = set()       # HWNDs for which ask-dialog is currently open
         self.pending_new_windows = []  # New windows not yet in any group (for 'ask' mode)
         self.new_window_action = "never"  # Config: never | ask | always
         self.new_window_auto_yes = None  # compiled regex: auto-add matching titles
@@ -1813,10 +1814,14 @@ class WindowSwitcherApp:
                             self._add_win_to_group(w, self.last_activated_group)
                             self.activated_windows_hwnds.add(w["hwnd"])
                         else:  # ask
+                            if w["hwnd"] in self._pending_ask_hwnds:
+                                continue  # dialog pro toto okno je již otevřen
+                            self._pending_ask_hwnds.add(w["hwnd"])
                             answer = self._ask_new_window_dialog(
                                 "Nové okno",
                                 f"Přidat do skupiny '{self.last_activated_group}'?\n\n{w['title']}",
                             )
+                            self._pending_ask_hwnds.discard(w["hwnd"])
                             if answer == "yes":
                                 self._add_win_to_group(w, self.last_activated_group)
                                 self.activated_windows_hwnds.add(w["hwnd"])
