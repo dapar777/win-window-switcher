@@ -278,6 +278,7 @@ class WindowSwitcherApp:
 
         # Background hlídání nových oken (ask/always mode)
         self._watch_new_windows_scheduled = False
+        self._watch_timer_id = None
         self.root.after(3000, self._watch_new_windows)
 
     def _get_monitors(self):
@@ -1803,7 +1804,7 @@ class WindowSwitcherApp:
                             else:  # "no" – přeskoč toto okno, příště (jiné okno) se zeptá
                                 self.declined_new_windows.add(w["hwnd"])
         finally:
-            self.root.after(2000, self._watch_new_windows)
+            self._watch_timer_id = self.root.after(2000, self._watch_new_windows)
 
     def _window_title_base(self, hwnd):
         length = User32.GetWindowTextLengthW(hwnd)
@@ -2157,6 +2158,15 @@ class WindowSwitcherApp:
         if win_obj is None:
             # Okno není v naší cache – bylo otevřeno po posledním refreshi switcheru.
             # Skupinu neopouštíme: _watch_new_windows se postará o ask/add logiku.
+            # Spustíme check okamžitě místo čekání na příští polling interval.
+            if self.last_activated_group:
+                if self._watch_timer_id is not None:
+                    try:
+                        self.root.after_cancel(self._watch_timer_id)
+                    except Exception:
+                        pass
+                    self._watch_timer_id = None
+                self.root.after(150, self._watch_new_windows)
             return
         # Primární kontrola: runtime HWND cache (nejrychlejší a nejspolehlivější).
         # Brání falešnému odchodu ze skupiny u oken se změněným HWND (PL/SQL, atd.)
