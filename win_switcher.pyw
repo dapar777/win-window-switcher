@@ -214,9 +214,10 @@ class WindowSwitcherApp:
         self.declined_new_windows = set()    # HWNDs user declined to add (reset on group switch)
         self._pending_ask_hwnds = set()       # HWNDs for which ask-dialog is currently open
         self.pending_new_windows = []  # New windows not yet in any group (for 'ask' mode)
-        self.new_window_action = "never"  # Config: never | ask | always
-        self.new_window_auto_yes = None  # compiled regex: auto-add matching titles
-        self.new_window_auto_no  = None  # compiled regex: auto-skip matching titles
+        self.new_window_action = "never"  # Config: never | ask | always | leave
+        self.new_window_auto_yes      = None  # compiled regex: auto-add matching titles
+        self.new_window_auto_no       = None  # compiled regex: auto-skip matching titles (stay in group)
+        self.new_window_auto_no_leave = None  # compiled regex: auto-skip + leave group
         self.prev_active_hwnd = None
         self.prev_active_title = ""
         # Taskbar icon hiding via ITaskbarList COM
@@ -520,7 +521,7 @@ class WindowSwitcherApp:
 
                         if line.startswith("new_window_action "):
                             val = line.split(None, 1)[1].lower()
-                            if val in ("never", "ask", "always"):
+                            if val in ("never", "ask", "always", "leave"):
                                 self.new_window_action = val
                             continue
 
@@ -538,6 +539,14 @@ class WindowSwitcherApp:
                                 self.new_window_auto_no = re.compile(pattern, re.IGNORECASE)
                             except re.error:
                                 self.new_window_auto_no = None
+                            continue
+
+                        if line.startswith("new_window_auto_no_leave "):
+                            pattern = line.split(None, 1)[1].strip()
+                            try:
+                                self.new_window_auto_no_leave = re.compile(pattern, re.IGNORECASE)
+                            except re.error:
+                                self.new_window_auto_no_leave = None
                             continue
 
                         if line.startswith("hide_taskbar_icons "):
@@ -1811,6 +1820,9 @@ class WindowSwitcherApp:
                     if w["hwnd"] in new_hwnds and not self.is_window_in_any_group(w):
                         title = w["title"]
                         # Regex výjimky z configu mají prioritu před new_window_action
+                        if self.new_window_auto_no_leave and self.new_window_auto_no_leave.search(title):
+                            self._leave_active_group()
+                            break
                         if self.new_window_auto_no and self.new_window_auto_no.search(title):
                             self.declined_new_windows.add(w["hwnd"])
                             continue
@@ -1821,6 +1833,9 @@ class WindowSwitcherApp:
                         if self.new_window_action in ("always", "always_until_switch"):
                             self._add_win_to_group(w, self.last_activated_group)
                             self.activated_windows_hwnds.add(w["hwnd"])
+                        elif self.new_window_action == "leave":
+                            self._leave_active_group()
+                            break
                         else:  # ask
                             if w["hwnd"] in self._pending_ask_hwnds:
                                 continue  # dialog pro toto okno je již otevřen

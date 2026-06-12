@@ -34,6 +34,7 @@ hotkey_key f12
 #                        Ne - zůstat (skip, ale zůstat ve skupině) /
 #                        Ne - opustit skupinu (skip + opustit skupinu)
 #   always             - nové okno se vždy přidá bez ptaní
+#   leave              - při vzniku nového okna se skupina automaticky opustí
 new_window_action ask
 
 # Skrývat ikony na hlavním panelu pro okna mimo aktivní skupinu (true / false)
@@ -47,6 +48,10 @@ hide_alttab_icons true
 # Příklad: new_window_auto_yes .*PL.SQL.*|.*Oracle.*
 # new_window_auto_yes 
 
-# Automatické vynechání nového okna (nebude přidáno ani dotázáno), pokud titulek odpovídá regexpu
+# Automatické vynechání nového okna (nebude přidáno ani dotázáno), skupina zůstane aktivní
 # Příklad: new_window_auto_no .*Outlook.*|.*Teams.*
 # new_window_auto_no 
+
+# Automatické vynechání nového okna + opustení skupiny, pokud titulek odpovídá regexpu
+# Příklad: new_window_auto_no_leave .*Outlook.*|.*Teams.*
+# new_window_auto_no_leave 
