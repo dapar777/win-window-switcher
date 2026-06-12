@@ -36,3 +36,12 @@ hide_taskbar_icons true
 
 # Skrývat okna mimo aktivní skupinu i v přepínání Alt+Tab (true / false)
 hide_alttab_icons true
+
+# Automatické přidání nového okna do skupiny bez ptaní, pokud titulek odpovídá regexpu
+# (má přednost před new_window_action ask/always)
+# Příklad: new_window_auto_yes .*PL.SQL.*|.*Oracle.*
+# new_window_auto_yes 
+
+# Automatické vynechání nového okna (nebude přidáno ani dotázáno), pokud titulek odpovídá regexpu
+# Příklad: new_window_auto_no .*Outlook.*|.*Teams.*
+# new_window_auto_no 

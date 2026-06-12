@@ -214,6 +214,8 @@ class WindowSwitcherApp:
         self.declined_new_windows = set()    # HWNDs user declined to add (reset on group switch)
         self.pending_new_windows = []  # New windows not yet in any group (for 'ask' mode)
         self.new_window_action = "never"  # Config: never | ask | always
+        self.new_window_auto_yes = None  # compiled regex: auto-add matching titles
+        self.new_window_auto_no  = None  # compiled regex: auto-skip matching titles
         self.prev_active_hwnd = None
         self.prev_active_title = ""
         # Taskbar icon hiding via ITaskbarList COM
@@ -519,6 +521,22 @@ class WindowSwitcherApp:
                             val = line.split(None, 1)[1].lower()
                             if val in ("never", "ask", "always"):
                                 self.new_window_action = val
+                            continue
+
+                        if line.startswith("new_window_auto_yes "):
+                            pattern = line.split(None, 1)[1].strip()
+                            try:
+                                self.new_window_auto_yes = re.compile(pattern, re.IGNORECASE)
+                            except re.error:
+                                self.new_window_auto_yes = None
+                            continue
+
+                        if line.startswith("new_window_auto_no "):
+                            pattern = line.split(None, 1)[1].strip()
+                            try:
+                                self.new_window_auto_no = re.compile(pattern, re.IGNORECASE)
+                            except re.error:
+                                self.new_window_auto_no = None
                             continue
 
                         if line.startswith("hide_taskbar_icons "):
@@ -1782,6 +1800,15 @@ class WindowSwitcherApp:
                 new_hwnds = current_hwnds - self.activated_windows_hwnds - self.declined_new_windows
                 for w in current_windows:
                     if w["hwnd"] in new_hwnds and not self.is_window_in_any_group(w):
+                        title = w["title"]
+                        # Regex výjimky z configu mají prioritu před new_window_action
+                        if self.new_window_auto_no and self.new_window_auto_no.search(title):
+                            self.declined_new_windows.add(w["hwnd"])
+                            continue
+                        if self.new_window_auto_yes and self.new_window_auto_yes.search(title):
+                            self._add_win_to_group(w, self.last_activated_group)
+                            self.activated_windows_hwnds.add(w["hwnd"])
+                            continue
                         if self.new_window_action in ("always", "always_until_switch"):
                             self._add_win_to_group(w, self.last_activated_group)
                             self.activated_windows_hwnds.add(w["hwnd"])
