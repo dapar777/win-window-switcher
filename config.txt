@@ -28,7 +28,12 @@ window_height 680
 hotkey_modifier alt
 hotkey_key f12
 
-# Chování při vzniku nového okna, pokud je aktivní skupina (never / ask / always)
+# Chování při vzniku nového okna, pokud je aktivní skupina:
+#   never              - nové okno se ignoruje
+#   ask                - zobrazí dotaz; tlačítka: Ano / Vždy / Vždy do přepnutí /
+#                        Ne - zůstat (skip, ale zůstat ve skupině) /
+#                        Ne - opustit skupinu (skip + opustit skupinu)
+#   always             - nové okno se vždy přidá bez ptaní
 new_window_action ask
 
 # Skrývat ikony na hlavním panelu pro okna mimo aktivní skupinu (true / false)

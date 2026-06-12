@@ -1718,8 +1718,8 @@ class WindowSwitcherApp:
         return "break"
 
     def _ask_new_window_dialog(self, title, message):
-        """Vlastní dialog s tlačítky: Ano / Ne / Vždy / Vždy do přepnutí.
-        Vrací: 'yes' | 'no' | 'always' | 'always_until_switch'
+        """Vlastní dialog s tlačítky: Ano / Vždy / Vždy do přepnutí / Ne - zůstat / Ne - opustit skupinu.
+        Vrací: 'yes' | 'always' | 'always_until_switch' | 'no' | 'no_leave'
         """
         result = ["no"]
         dlg = tk.Toplevel(self.root)
@@ -1737,24 +1737,32 @@ class WindowSwitcherApp:
             result[0] = val
             dlg.destroy()
 
-        # Tlačítka v pořadí pro navigaci šipkami (row, col)
-        btns = [
-            tk.Button(btn_frame, text="Ano",               width=10, command=lambda: pick("yes")),
-            tk.Button(btn_frame, text="Ne",                width=10, command=lambda: pick("no")),
-            tk.Button(btn_frame, text="Vždy",              width=18, command=lambda: pick("always")),
-            tk.Button(btn_frame, text="Vždy do přepnutí", width=18, command=lambda: pick("always_until_switch")),
-        ]
-        positions = [(0, 0), (0, 1), (1, 0), (1, 1)]
-        for btn, (r, c) in zip(btns, positions):
-            btn.grid(row=r, column=c, padx=4, pady=2)
+        # Layout:
+        #   Row 0: [Ano] (colspan 2)
+        #   Row 1: [Vždy] [Vždy do přepnutí]
+        #   Row 2: [Ne - zůstat] [Ne - opustit skupinu]
+        btn_ano   = tk.Button(btn_frame, text="Ano",                    width=18, command=lambda: pick("yes"))
+        btn_vzdy  = tk.Button(btn_frame, text="Vždy",                   width=18, command=lambda: pick("always"))
+        btn_vpre  = tk.Button(btn_frame, text="Vždy do přepnutí",       width=18, command=lambda: pick("always_until_switch"))
+        btn_nz    = tk.Button(btn_frame, text="Ne - zůstat",             width=18, command=lambda: pick("no"))
+        btn_nl    = tk.Button(btn_frame, text="Ne - opustit skupinu",    width=18, command=lambda: pick("no_leave"))
+
+        btn_ano.grid (row=0, column=0, columnspan=2, padx=4, pady=2)
+        btn_vzdy.grid(row=1, column=0,               padx=4, pady=2)
+        btn_vpre.grid(row=1, column=1,               padx=4, pady=2)
+        btn_nz.grid  (row=2, column=0,               padx=4, pady=2)
+        btn_nl.grid  (row=2, column=1,               padx=4, pady=2)
+
+        btns = [btn_ano, btn_vzdy, btn_vpre, btn_nz, btn_nl]
+        positions = [(0, 0), (1, 0), (1, 1), (2, 0), (2, 1)]
 
         # Navigace šipkami mezi tlačítky
         nav = {
-            # (row, col) -> Right/Left/Down/Up
-            (0, 0): {"Right": (0,1), "Down": (1,0)},
-            (0, 1): {"Left":  (0,0), "Down": (1,1)},
-            (1, 0): {"Right": (1,1), "Up":   (0,0)},
-            (1, 1): {"Left":  (1,0), "Up":   (0,1)},
+            (0, 0): {"Down": (1, 0)},
+            (1, 0): {"Up": (0, 0), "Right": (1, 1), "Down": (2, 0)},
+            (1, 1): {"Up": (0, 0), "Left":  (1, 0), "Down": (2, 1)},
+            (2, 0): {"Up": (1, 0), "Right": (2, 1)},
+            (2, 1): {"Up": (1, 1), "Left":  (2, 0)},
         }
         pos_map = {pos: btn for btn, pos in zip(btns, positions)}
 
@@ -1833,6 +1841,10 @@ class WindowSwitcherApp:
                                 self.new_window_action = "always_until_switch"
                                 self._add_win_to_group(w, self.last_activated_group)
                                 self.activated_windows_hwnds.add(w["hwnd"])
+                            elif answer == "no_leave":  # opustit skupinu
+                                self.declined_new_windows.add(w["hwnd"])
+                                self._leave_active_group()
+                                break
                             else:  # "no" – přeskoč toto okno, příště (jiné okno) se zeptá
                                 self.declined_new_windows.add(w["hwnd"])
         finally:
