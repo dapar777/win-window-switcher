@@ -1,6 +1,26 @@
 {
     "groups": {
-        "_": []
+        "_": [],
+        "gga": [
+            {
+                "id": 13168695,
+                "process": "TOTALCMD64.EXE",
+                "class": "TTOTAL_CMD",
+                "title": "Total Commander (x64) 11.56 - NOT REGISTERED"
+            },
+            {
+                "id": 2763650,
+                "process": "Code.exe",
+                "class": "Chrome_WidgetWin_1",
+                "title": "start_switcher.bat (Working Tree) (start_switcher.bat) - win-window-switcher - Visual Studio Code"
+            },
+            {
+                "id": 73000466,
+                "process": "msedge.exe",
+                "class": "Chrome_WidgetWin_1",
+                "title": "Citrix Gateway – Profil 1 – Microsoft​ Edge"
+            }
+        ]
     },
     "views": {}
 }

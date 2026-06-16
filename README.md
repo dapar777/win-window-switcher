@@ -44,6 +44,8 @@ Konfigurace se nachází v souboru `config.txt` s formátem:
 <zkratka> <vzor_regulárního_výrazu> <příkaz_na_spuštění>
 ```
 
+> `hotkey_key` může být nastaveno jako `tab`, `space`, `caps`, `f1`–`f24`, nebo jako jednopísmenná/jednociferná klávesa (`x`, `1`, atd.).
+
 **Příklady:**
 ```text
 vn .*notes.* code -n c:/notes
