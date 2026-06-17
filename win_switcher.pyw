@@ -218,6 +218,7 @@ class WindowSwitcherApp:
         self.new_window_auto_yes      = None  # compiled regex: auto-add matching titles
         self.new_window_auto_no       = None  # compiled regex: auto-skip matching titles (stay in group)
         self.new_window_auto_no_leave = None  # compiled regex: auto-skip + leave group
+        self.auto_close_windows = None  # compiled regex: auto-close matching new windows
         self.prev_active_hwnd = None
         self.prev_active_title = ""
         # Taskbar icon hiding via ITaskbarList COM
@@ -547,6 +548,14 @@ class WindowSwitcherApp:
                                 self.new_window_auto_no_leave = re.compile(pattern, re.IGNORECASE)
                             except re.error:
                                 self.new_window_auto_no_leave = None
+                            continue
+
+                        if line.startswith("auto_close_windows "):
+                            pattern = line.split(None, 1)[1].strip()
+                            try:
+                                self.auto_close_windows = re.compile(pattern, re.IGNORECASE)
+                            except re.error:
+                                self.auto_close_windows = None
                             continue
 
                         if line.startswith("hide_taskbar_icons "):
@@ -1032,30 +1041,34 @@ class WindowSwitcherApp:
                                     "hwnd": win["hwnd"],
                                     "title": win["title"]
                                 })
-            elif remaining.lower() == "aaa":
+            elif remaining.lower() == "aaa" or remaining.lower().startswith("aaa "):
+                filter_text = remaining[3:].strip()
                 # Multi-select: list all windows NOT in this group
                 self.multi_selected = set()
                 for win in self.all_windows:
                     if not self.is_window_in_group(win, group_name):
-                        self.filtered_items.append({
-                            "type": "window",
-                            "hwnd": win["hwnd"],
-                            "title": win["title"],
-                            "add_to_group": group_name,
-                            "aaa_mode": True,
-                        })
-            elif remaining.lower() == "aai":
+                        if not filter_text or filter_text.lower() in win["title"].lower():
+                            self.filtered_items.append({
+                                "type": "window",
+                                "hwnd": win["hwnd"],
+                                "title": win["title"],
+                                "add_to_group": group_name,
+                                "aaa_mode": True,
+                            })
+            elif remaining.lower() == "aai" or remaining.lower().startswith("aai "):
+                filter_text = remaining[3:].strip()
                 # Exclusive add: list non-group windows; on activate remove from other groups too
                 self.multi_selected = set()
                 for win in self.all_windows:
                     if not self.is_window_in_group(win, group_name):
-                        self.filtered_items.append({
-                            "type": "window",
-                            "hwnd": win["hwnd"],
-                            "title": win["title"],
-                            "add_to_group": group_name,
-                            "aai_mode": True,
-                        })
+                        if not filter_text or filter_text.lower() in win["title"].lower():
+                            self.filtered_items.append({
+                                "type": "window",
+                                "hwnd": win["hwnd"],
+                                "title": win["title"],
+                                "add_to_group": group_name,
+                                "aai_mode": True,
+                            })
             elif remaining.lower() == "kkk":
                 cur_hwnd = self.prev_active_hwnd
                 cur_title = self.prev_active_title or "Neznámé"
@@ -1625,6 +1638,9 @@ class WindowSwitcherApp:
         # keycode 45 = VK_INSERT na Windows, funguje bez ohledu na keysym/rozložení klávesnice
         if event.keycode == 45 or event.keysym in ('Insert', 'KP_Insert'):
             return self.on_insert_toggle_select(event)
+        # keycode 46 = VK_DELETE – zavřít / vyjmout okno ze skupiny
+        if event.keycode == 46 or event.keysym == 'Delete':
+            return self._on_delete_window(event)
         # Všechny ostatní klávesy: nevrací "break", normální zpracování pokračuje
 
     def on_insert_toggle_select(self, event=None):
@@ -1637,6 +1653,155 @@ class WindowSwitcherApp:
             self.selected_index = (self.selected_index + 1) % len(self.filtered_items)
             self.render_rows()
         return "break"
+
+    def _on_delete_window(self, event=None):
+        """Delete klávesa: zavře nebo vyjme okno ze skupiny podle kontextu."""
+        if not self.filtered_items or self.selected_index >= len(self.filtered_items):
+            return "break"
+        item = self.filtered_items[self.selected_index]
+        if item["type"] != "window" or not item.get("hwnd"):
+            return "break"
+
+        hwnd = item["hwnd"]
+        win_title = item["title"]
+        win_obj = next((w for w in self.all_windows if w["hwnd"] == hwnd), None)
+
+        # Detect group context from entry text
+        _cur_tokens = self.entry_var.get().strip().split()
+        current_group = ""
+        if _cur_tokens:
+            first_token = _cur_tokens[0].lower()
+            if (first_token.startswith("gg") and len(first_token) > 2) or first_token == "_":
+                current_group = first_token
+
+        # Check if the window is actually IN the current group
+        in_group = False
+        if current_group and current_group != "_" and win_obj:
+            in_group = self.is_window_in_group(win_obj, current_group)
+
+        WM_CLOSE = 0x0010
+        if in_group:
+            answer = self._ask_delete_in_group_dialog(win_title, current_group)
+            if answer == "close":
+                User32.PostMessageW(hwnd, WM_CLOSE, 0, 0)
+                self.root.after(400, self._refresh_after_window_change)
+            elif answer == "remove":
+                if win_obj:
+                    self._remove_win_from_group(win_obj, current_group)
+                self._refresh_after_window_change()
+        else:
+            if self._ask_close_window_dialog(win_title):
+                User32.PostMessageW(hwnd, WM_CLOSE, 0, 0)
+                self.root.after(400, self._refresh_after_window_change)
+        return "break"
+
+    def _refresh_after_window_change(self):
+        """Obnoví seznam oken a přefiltruje zobrazení."""
+        self.all_windows = self.get_open_windows()
+        self._refresh_window_group_titles()
+        self._do_text_changed()
+
+    def _ask_close_window_dialog(self, win_title):
+        """Dialog: potvrdit zavření okna mimo skupinu. Vrací True/False."""
+        result = [False]
+        dlg = tk.Toplevel(self.root)
+        dlg.title("Zavřít okno")
+        dlg.resizable(False, False)
+        dlg.grab_set()
+        dlg.attributes("-topmost", True)
+
+        short_title = (win_title[:80] + "…") if len(win_title) > 80 else win_title
+        tk.Label(dlg, text=f"Opravdu zavřít okno?\n\n{short_title}",
+                 justify="left", padx=16, pady=12, wraplength=420).pack()
+
+        btn_frame = tk.Frame(dlg, padx=12, pady=8)
+        btn_frame.pack()
+
+        def pick(val):
+            result[0] = val
+            dlg.destroy()
+
+        btn_yes = tk.Button(btn_frame, text="Zavřít", width=14, command=lambda: pick(True))
+        btn_no  = tk.Button(btn_frame, text="Zrušit", width=14, command=lambda: pick(False))
+        btn_yes.grid(row=0, column=0, padx=4, pady=2)
+        btn_no.grid (row=0, column=1, padx=4, pady=2)
+
+        for btn, other in [(btn_yes, btn_no), (btn_no, btn_yes)]:
+            btn.bind("<Left>",   lambda e, o=other: (o.focus_set(), "break")[1])
+            btn.bind("<Right>",  lambda e, o=other: (o.focus_set(), "break")[1])
+            btn.bind("<Return>", lambda e, b=btn: b.invoke())
+            btn.bind("<space>",  lambda e, b=btn: b.invoke())
+
+        dlg.update_idletasks()
+        x = self.root.winfo_screenwidth() // 2 - dlg.winfo_width() // 2
+        y = self.root.winfo_screenheight() // 2 - dlg.winfo_height() // 2
+        dlg.geometry(f"+{x}+{y}")
+
+        hwnd_dlg = User32.GetAncestor(dlg.winfo_id(), 3)
+        User32.ShowWindow(hwnd_dlg, SW_SHOW)
+        User32.keybd_event(0x12, 0, 0, 0)
+        User32.SetForegroundWindow(hwnd_dlg)
+        User32.keybd_event(0x12, 0, 2, 0)
+        dlg.lift()
+        dlg.focus_force()
+        btn_yes.focus_set()
+
+        dlg.wait_window()
+        return result[0]
+
+    def _ask_delete_in_group_dialog(self, win_title, group_name):
+        """Dialog pro okno VE skupině: Zavřít / Vyjmout ze skupiny / Zrušit.
+        Vrací: 'close' | 'remove' | 'cancel'
+        """
+        result = ["cancel"]
+        dlg = tk.Toplevel(self.root)
+        dlg.title(f"Okno ve skupině '{group_name}'")
+        dlg.resizable(False, False)
+        dlg.grab_set()
+        dlg.attributes("-topmost", True)
+
+        short_title = (win_title[:80] + "…") if len(win_title) > 80 else win_title
+        tk.Label(dlg, text=short_title, justify="left", padx=16, pady=12, wraplength=420).pack()
+
+        btn_frame = tk.Frame(dlg, padx=12, pady=8)
+        btn_frame.pack()
+
+        def pick(val):
+            result[0] = val
+            dlg.destroy()
+
+        btn_close  = tk.Button(btn_frame, text="Zavřít okno",        width=22, command=lambda: pick("close"))
+        btn_remove = tk.Button(btn_frame, text="Vyjmout ze skupiny", width=22, command=lambda: pick("remove"))
+        btn_cancel = tk.Button(btn_frame, text="Zrušit",              width=22, command=lambda: pick("cancel"))
+        btn_close.grid (row=0, column=0, padx=4, pady=2)
+        btn_remove.grid(row=1, column=0, padx=4, pady=2)
+        btn_cancel.grid(row=2, column=0, padx=4, pady=2)
+
+        btns = [btn_close, btn_remove, btn_cancel]
+        for i, btn in enumerate(btns):
+            up_btn = btns[(i - 1) % len(btns)]
+            dn_btn = btns[(i + 1) % len(btns)]
+            btn.bind("<Up>",     lambda e, b=up_btn: (b.focus_set(), "break")[1])
+            btn.bind("<Down>",   lambda e, b=dn_btn: (b.focus_set(), "break")[1])
+            btn.bind("<Return>", lambda e, b=btn: b.invoke())
+            btn.bind("<space>",  lambda e, b=btn: b.invoke())
+
+        dlg.update_idletasks()
+        x = self.root.winfo_screenwidth() // 2 - dlg.winfo_width() // 2
+        y = self.root.winfo_screenheight() // 2 - dlg.winfo_height() // 2
+        dlg.geometry(f"+{x}+{y}")
+
+        hwnd_dlg = User32.GetAncestor(dlg.winfo_id(), 3)
+        User32.ShowWindow(hwnd_dlg, SW_SHOW)
+        User32.keybd_event(0x12, 0, 0, 0)
+        User32.SetForegroundWindow(hwnd_dlg)
+        User32.keybd_event(0x12, 0, 2, 0)
+        dlg.lift()
+        dlg.focus_force()
+        btn_close.focus_set()
+
+        dlg.wait_window()
+        return result[0]
 
     def navigate_group_left(self, event):
         # Gather all groups, sort them alphabetically
@@ -1727,8 +1892,8 @@ class WindowSwitcherApp:
         return "break"
 
     def _ask_new_window_dialog(self, title, message):
-        """Vlastní dialog s tlačítky: Ano / Vždy / Vždy do přepnutí / Ne - zůstat / Ne - opustit skupinu.
-        Vrací: 'yes' | 'always' | 'always_until_switch' | 'no' | 'no_leave'
+        """Vlastní dialog s tlačítky: Zavřít okno / Ano / Vždy / Vždy do přepnutí / Ne - zůstat / Ne - opustit skupinu.
+        Vrací: 'close' | 'yes' | 'always' | 'always_until_switch' | 'no' | 'no_leave'
         """
         result = ["no"]
         dlg = tk.Toplevel(self.root)
@@ -1747,31 +1912,35 @@ class WindowSwitcherApp:
             dlg.destroy()
 
         # Layout:
-        #   Row 0: [Ano] (colspan 2)
-        #   Row 1: [Vždy] [Vždy do přepnutí]
-        #   Row 2: [Ne - zůstat] [Ne - opustit skupinu]
-        btn_ano   = tk.Button(btn_frame, text="Ano",                    width=18, command=lambda: pick("yes"))
-        btn_vzdy  = tk.Button(btn_frame, text="Vždy",                   width=18, command=lambda: pick("always"))
-        btn_vpre  = tk.Button(btn_frame, text="Vždy do přepnutí",       width=18, command=lambda: pick("always_until_switch"))
-        btn_nz    = tk.Button(btn_frame, text="Ne - zůstat",             width=18, command=lambda: pick("no"))
-        btn_nl    = tk.Button(btn_frame, text="Ne - opustit skupinu",    width=18, command=lambda: pick("no_leave"))
+        #   Row 0: [Zavřít okno] (colspan 2)  ← šipkou nahoru z Ano
+        #   Row 1: [Ano] (colspan 2)
+        #   Row 2: [Vždy] [Vždy do přepnutí]
+        #   Row 3: [Ne - zůstat] [Ne - opustit skupinu]
+        btn_zavrit = tk.Button(btn_frame, text="Zavřít okno",           width=18, command=lambda: pick("close"))
+        btn_ano    = tk.Button(btn_frame, text="Ano",                    width=18, command=lambda: pick("yes"))
+        btn_vzdy   = tk.Button(btn_frame, text="Vždy",                   width=18, command=lambda: pick("always"))
+        btn_vpre   = tk.Button(btn_frame, text="Vždy do přepnutí",       width=18, command=lambda: pick("always_until_switch"))
+        btn_nz     = tk.Button(btn_frame, text="Ne - zůstat",             width=18, command=lambda: pick("no"))
+        btn_nl     = tk.Button(btn_frame, text="Ne - opustit skupinu",    width=18, command=lambda: pick("no_leave"))
 
-        btn_ano.grid (row=0, column=0, columnspan=2, padx=4, pady=2)
-        btn_vzdy.grid(row=1, column=0,               padx=4, pady=2)
-        btn_vpre.grid(row=1, column=1,               padx=4, pady=2)
-        btn_nz.grid  (row=2, column=0,               padx=4, pady=2)
-        btn_nl.grid  (row=2, column=1,               padx=4, pady=2)
+        btn_zavrit.grid(row=0, column=0, columnspan=2, padx=4, pady=2)
+        btn_ano.grid   (row=1, column=0, columnspan=2, padx=4, pady=2)
+        btn_vzdy.grid  (row=2, column=0,               padx=4, pady=2)
+        btn_vpre.grid  (row=2, column=1,               padx=4, pady=2)
+        btn_nz.grid    (row=3, column=0,               padx=4, pady=2)
+        btn_nl.grid    (row=3, column=1,               padx=4, pady=2)
 
-        btns = [btn_ano, btn_vzdy, btn_vpre, btn_nz, btn_nl]
-        positions = [(0, 0), (1, 0), (1, 1), (2, 0), (2, 1)]
+        btns = [btn_zavrit, btn_ano, btn_vzdy, btn_vpre, btn_nz, btn_nl]
+        positions = [(0, 0), (1, 0), (2, 0), (2, 1), (3, 0), (3, 1)]
 
         # Navigace šipkami mezi tlačítky
         nav = {
             (0, 0): {"Down": (1, 0)},
-            (1, 0): {"Up": (0, 0), "Right": (1, 1), "Down": (2, 0)},
-            (1, 1): {"Up": (0, 0), "Left":  (1, 0), "Down": (2, 1)},
-            (2, 0): {"Up": (1, 0), "Right": (2, 1)},
-            (2, 1): {"Up": (1, 1), "Left":  (2, 0)},
+            (1, 0): {"Up": (0, 0), "Down": (2, 0)},
+            (2, 0): {"Up": (1, 0), "Right": (2, 1), "Down": (3, 0)},
+            (2, 1): {"Up": (1, 0), "Left":  (2, 0), "Down": (3, 1)},
+            (3, 0): {"Up": (2, 0), "Right": (3, 1)},
+            (3, 1): {"Up": (2, 1), "Left":  (3, 0)},
         }
         pos_map = {pos: btn for btn, pos in zip(btns, positions)}
 
@@ -1804,7 +1973,7 @@ class WindowSwitcherApp:
         User32.keybd_event(0x12, 0, 2, 0)   # ALT up
         dlg.lift()
         dlg.focus_force()
-        btns[0].focus_set()  # Focus na Ano
+        btns[1].focus_set()  # Focus na Ano; šipkou nahoru → Zavřít okno
 
         dlg.wait_window()
         return result[0]
@@ -1820,6 +1989,11 @@ class WindowSwitcherApp:
                     if w["hwnd"] in new_hwnds and not self.is_window_in_any_group(w):
                         title = w["title"]
                         # Regex výjimky z configu mají prioritu před new_window_action
+                        if self.auto_close_windows and self.auto_close_windows.search(title):
+                            WM_CLOSE = 0x0010
+                            User32.PostMessageW(w["hwnd"], WM_CLOSE, 0, 0)
+                            self.declined_new_windows.add(w["hwnd"])
+                            continue
                         if self.new_window_auto_no_leave and self.new_window_auto_no_leave.search(title):
                             self._leave_active_group()
                             break
@@ -1856,6 +2030,10 @@ class WindowSwitcherApp:
                                 self.new_window_action = "always_until_switch"
                                 self._add_win_to_group(w, self.last_activated_group)
                                 self.activated_windows_hwnds.add(w["hwnd"])
+                            elif answer == "close":
+                                WM_CLOSE = 0x0010
+                                User32.PostMessageW(w["hwnd"], WM_CLOSE, 0, 0)
+                                self.declined_new_windows.add(w["hwnd"])
                             elif answer == "no_leave":  # opustit skupinu
                                 self.declined_new_windows.add(w["hwnd"])
                                 self._leave_active_group()
@@ -2238,6 +2416,7 @@ class WindowSwitcherApp:
     def _leave_active_group(self):
         """Opustí aktivní skupinu: obnoví taskbar, tray a OSD."""
         self.last_activated_group = ""
+        self.last_group = ""  # aby switcher příště otevřel na všech oknech
         self._restore_all_taskbar_icons()
         self.root.after(0, lambda: self._update_tray(""))
         self.root.after(0, lambda: self._update_osd(""))
