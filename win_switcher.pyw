@@ -363,14 +363,20 @@ class WindowSwitcherApp:
                 osd_entry["win"].deiconify()
                 osd_entry["win"].lift()
                 osd_entry["win"].attributes("-topmost", True)
+                # WinAPI HWND_TOPMOST – spolehlivější než Tkinter na multi-monitoru
+                try:
+                    hwnd_osd = User32.GetAncestor(osd_entry["win"].winfo_id(), 3)
+                    User32.SetWindowPos(hwnd_osd, HWND_TOPMOST, 0, 0, 0, 0,
+                                        SWP_NOMOVE | SWP_NOSIZE_FLAG)
+                except Exception:
+                    pass
             if not _reassert:
-                # Re-assert po 300 ms – opravuje multimonitor compositor lag.
-                # Kontrolujeme, že skupina stále souhlasit – zabránííme zobrazení
-                # starého nápisu po tom, co uživatel skupinu opustil.
-                def _deferred_reassert(g=group_name):
-                    if self.last_activated_group == g:
-                        self._update_osd(g, _reassert=True)
-                self.root.after(300, _deferred_reassert)
+                # Tři vlny re-assertů pro různě pomalé compositor/display stack situace
+                for delay in (300, 1000, 3000):
+                    def _deferred_reassert(g=group_name):
+                        if self.last_activated_group == g:
+                            self._update_osd(g, _reassert=True)
+                    self.root.after(delay, _deferred_reassert)
         else:
             for osd_entry in self.osd_windows:
                 osd_entry["win"].withdraw()
