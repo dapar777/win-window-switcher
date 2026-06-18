@@ -880,7 +880,13 @@ class WindowSwitcherApp:
                     
                     if title == "Quick Window Switcher":
                         return True
-                        
+
+                    # Přeskoč všechna okna vlastního procesu (dialogy, OSD, tray…)
+                    _own_pid = ctypes.c_ulong()
+                    User32.GetWindowThreadProcessId(hwnd, ctypes.byref(_own_pid))
+                    if _own_pid.value == os.getpid():
+                        return True
+
                     ex_style = User32.GetWindowLongW(hwnd, GWL_EXSTYLE)
                     hidden_by_switcher = bool(User32.GetPropW(hwnd, "WinSwitcherExStyle"))
                     if not (ex_style & WS_EX_TOOLWINDOW) or hidden_by_switcher:
