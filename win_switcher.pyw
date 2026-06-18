@@ -957,7 +957,7 @@ class WindowSwitcherApp:
         self.all_windows = self.get_open_windows()
         self._refresh_window_group_titles()
 
-        self.entry_var.set(self.last_group)
+        self.entry_var.set(self.last_group + " " if self.last_group else "")
         self.center_on_screen()
         self.root.deiconify()
         self.root.attributes("-topmost", True)
@@ -1026,7 +1026,7 @@ class WindowSwitcherApp:
                 other_groups = [g for g in self.groups.keys() if g != "_"]
                 if not other_groups:
                     for win in self.all_windows:
-                        if not remaining or remaining.lower() in win["title"].lower():
+                        if not remaining or remaining.lower() in win["title"].lower() or remaining.lower() in win["process"].lower():
                             self.filtered_items.append({
                                 "type": "window",
                                 "hwnd": win["hwnd"],
@@ -1035,7 +1035,7 @@ class WindowSwitcherApp:
                 else:
                     for win in self.all_windows:
                         if not self.is_window_in_any_group(win):
-                            if not remaining or remaining.lower() in win["title"].lower():
+                            if not remaining or remaining.lower() in win["title"].lower() or remaining.lower() in win["process"].lower():
                                 self.filtered_items.append({
                                     "type": "window",
                                     "hwnd": win["hwnd"],
@@ -1047,7 +1047,7 @@ class WindowSwitcherApp:
                 self.multi_selected = set()
                 for win in self.all_windows:
                     if not self.is_window_in_group(win, group_name):
-                        if not filter_text or filter_text.lower() in win["title"].lower():
+                        if not filter_text or filter_text.lower() in win["title"].lower() or filter_text.lower() in win["process"].lower():
                             self.filtered_items.append({
                                 "type": "window",
                                 "hwnd": win["hwnd"],
@@ -1061,7 +1061,7 @@ class WindowSwitcherApp:
                 self.multi_selected = set()
                 for win in self.all_windows:
                     if not self.is_window_in_group(win, group_name):
-                        if not filter_text or filter_text.lower() in win["title"].lower():
+                        if not filter_text or filter_text.lower() in win["title"].lower() or filter_text.lower() in win["process"].lower():
                             self.filtered_items.append({
                                 "type": "window",
                                 "hwnd": win["hwnd"],
@@ -1117,7 +1117,7 @@ class WindowSwitcherApp:
                 })
             elif remaining:
                 for win in self.all_windows:
-                    if remaining.lower() in win["title"].lower():
+                    if remaining.lower() in win["title"].lower() or remaining.lower() in win["process"].lower():
                         self.filtered_items.append({
                             "type": "window",
                             "hwnd": win["hwnd"],
@@ -1215,7 +1215,7 @@ class WindowSwitcherApp:
                 windows_in_other_groups = []
 
                 for win in self.all_windows:
-                    if not search_text or search_text.lower() in win["title"].lower():
+                    if not search_text or search_text.lower() in win["title"].lower() or search_text.lower() in win["process"].lower():
                         item_obj = {
                             "type": "window",
                             "hwnd": win["hwnd"],
@@ -1835,7 +1835,7 @@ class WindowSwitcherApp:
         if current_g and current_text.lower().startswith(current_g):
             remaining = current_text[len(current_g):].strip()
             
-        new_text = f"{new_g} {remaining}".strip() if new_g else remaining
+        new_text = f"{new_g} {remaining.strip()}" if new_g else remaining
         self.entry_var.set(new_text)
         self.entry.icursor(tk.END)
         # Show navigation hint in status bar
@@ -1879,7 +1879,7 @@ class WindowSwitcherApp:
         if current_g and current_text.lower().startswith(current_g):
             remaining = current_text[len(current_g):].strip()
             
-        new_text = f"{new_g} {remaining}".strip() if new_g else remaining
+        new_text = f"{new_g} {remaining.strip()}" if new_g else remaining
         self.entry_var.set(new_text)
         self.entry.icursor(tk.END)
         # Show navigation hint in status bar
