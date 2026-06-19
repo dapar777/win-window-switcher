@@ -1749,11 +1749,6 @@ class WindowSwitcherApp:
         y = self.root.winfo_screenheight() // 2 - dlg.winfo_height() // 2
         dlg.geometry(f"+{x}+{y}")
 
-        hwnd_dlg = User32.GetAncestor(dlg.winfo_id(), 3)
-        User32.ShowWindow(hwnd_dlg, SW_SHOW)
-        User32.keybd_event(0x12, 0, 0, 0)
-        User32.SetForegroundWindow(hwnd_dlg)
-        User32.keybd_event(0x12, 0, 2, 0)
         dlg.lift()
         dlg.focus_force()
         btn_yes.focus_set()
@@ -1803,11 +1798,6 @@ class WindowSwitcherApp:
         y = self.root.winfo_screenheight() // 2 - dlg.winfo_height() // 2
         dlg.geometry(f"+{x}+{y}")
 
-        hwnd_dlg = User32.GetAncestor(dlg.winfo_id(), 3)
-        User32.ShowWindow(hwnd_dlg, SW_SHOW)
-        User32.keybd_event(0x12, 0, 0, 0)
-        User32.SetForegroundWindow(hwnd_dlg)
-        User32.keybd_event(0x12, 0, 2, 0)
         dlg.lift()
         dlg.focus_force()
         btn_close.focus_set()
