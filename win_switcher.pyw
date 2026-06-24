@@ -2149,9 +2149,15 @@ class WindowSwitcherApp:
                                 WM_CLOSE = 0x0010
                                 User32.PostMessageW(w["hwnd"], WM_CLOSE, 0, 0)
                                 self.declined_new_windows.add(w["hwnd"])
-                            elif answer == "no_leave":  # opustit skupinu
+                            elif answer == "no_leave":  # opustit skupinu + aktivovat dané okno
                                 self.declined_new_windows.add(w["hwnd"])
                                 self._leave_active_group()
+                                if User32.IsIconic(w["hwnd"]):
+                                    User32.ShowWindow(w["hwnd"], SW_RESTORE)
+                                else:
+                                    User32.ShowWindow(w["hwnd"], SW_SHOW)
+                                User32.SetForegroundWindow(w["hwnd"])
+                                User32.BringWindowToTop(w["hwnd"])
                                 break
                             else:  # "no" – přeskoč toto okno, příště (jiné okno) se zeptá
                                 self.declined_new_windows.add(w["hwnd"])
