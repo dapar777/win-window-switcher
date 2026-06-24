@@ -162,6 +162,7 @@ HWND_NOTOPMOST = -2
 SWP_NOMOVE     = 0x0002
 SWP_NOSIZE_FLAG = 0x0001
 SWP_NOZORDER_FLAG = 0x0004
+SWP_NOACTIVATE_FLAG = 0x0010
 EVENT_SYSTEM_MOVESIZEEND = 0x000B
 WINEVENT_OUTOFCONTEXT    = 0x0000
 
@@ -285,6 +286,8 @@ class WindowSwitcherApp:
         self._watch_new_windows_scheduled = False
         self._watch_timer_id = None
         self.root.after(3000, self._watch_new_windows)
+        # Trvalá kontrola viditelnosti OSD na všech monitorech (proti zmizení).
+        self.root.after(2000, self._osd_watchdog)
 
     def _get_monitors(self):
         """Vrátí seznam monitorů jako (x, y, w, h)."""
@@ -321,7 +324,9 @@ class WindowSwitcherApp:
             except Exception:
                 pass
         self.osd_windows = []
-        for mx, my, mw, mh in self._get_monitors():
+        monitors = self._get_monitors()
+        self._osd_monitor_sig = tuple(monitors)
+        for mx, my, mw, mh in monitors:
             win = tk.Toplevel(self.root)
             win.overrideredirect(True)
             win.attributes("-topmost", True)
@@ -367,7 +372,7 @@ class WindowSwitcherApp:
                 try:
                     hwnd_osd = User32.GetAncestor(osd_entry["win"].winfo_id(), 3)
                     User32.SetWindowPos(hwnd_osd, HWND_TOPMOST, 0, 0, 0, 0,
-                                        SWP_NOMOVE | SWP_NOSIZE_FLAG)
+                                        SWP_NOMOVE | SWP_NOSIZE_FLAG | SWP_NOACTIVATE_FLAG)
                 except Exception:
                     pass
             if not _reassert:
@@ -380,6 +385,35 @@ class WindowSwitcherApp:
         else:
             for osd_entry in self.osd_windows:
                 osd_entry["win"].withdraw()
+
+    def _osd_watchdog(self):
+        """Periodicky hlídá, že OSD nápis skupiny zůstává viditelný na VŠECH monitorech.
+
+        Topmost overlay může na jednotlivém monitoru zmizet, aniž bychom o tom
+        věděli – fullscreen aplikace ukradne topmost, monitor se uspí/probudí,
+        compositor overlay shodí, nebo se změní rozložení monitorů. Tři vlny
+        re-assertů po aktivaci to nepokryjí, proto tu běží trvalá kontrola."""
+        try:
+            if self.last_activated_group:
+                # Změna rozložení monitorů → znovu postav OSD okna a zobraz je.
+                if tuple(self._get_monitors()) != getattr(self, "_osd_monitor_sig", None):
+                    self._setup_osd()
+                    self._update_osd(self.last_activated_group, _reassert=True)
+                else:
+                    for osd_entry in self.osd_windows:
+                        win = osd_entry["win"]
+                        try:
+                            if not win.winfo_viewable():
+                                # Okno spadlo (withdraw/unmap) – přepozicuj a zobraz.
+                                self._osd_reposition_one(osd_entry, self.last_activated_group)
+                                win.deiconify()
+                            hwnd_osd = User32.GetAncestor(win.winfo_id(), 3)
+                            User32.SetWindowPos(hwnd_osd, HWND_TOPMOST, 0, 0, 0, 0,
+                                                SWP_NOMOVE | SWP_NOSIZE_FLAG | SWP_NOACTIVATE_FLAG)
+                        except Exception:
+                            pass
+        finally:
+            self.root.after(2000, self._osd_watchdog)
 
     def _make_tray_image(self, group_name):
         """Vygeneruje 64x64 ikonku s názvem skupiny."""
