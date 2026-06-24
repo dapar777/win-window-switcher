@@ -997,6 +997,11 @@ class WindowSwitcherApp:
         self.clear_all_row_thumbnails()
         self.clear_thumbnail()
         self.root.withdraw()
+        # root.withdraw() skryje i vlastněná OSD okna (Win32 owned windows) –
+        # pokud jsme stále ve skupině, znovu je zobrazíme s malým zpožděním.
+        if self.last_activated_group:
+            g = self.last_activated_group
+            self.root.after(50, lambda: self._update_osd(g, _reassert=True) if self.last_activated_group == g else None)
 
     def hide_switcher_on_focus_loss(self):
         self.root.after(100, self._check_focus_and_hide)
