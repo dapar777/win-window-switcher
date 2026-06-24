@@ -2535,13 +2535,15 @@ class WindowSwitcherApp:
             if item.get("aaa_mode") or item.get("aai_mode"):
                 gname = item.get("add_to_group", "")
                 is_exclusive = bool(item.get("aai_mode"))
-                # Determine which items to add: multi_selected set + cursor (aby
-                # aktivované okno bylo vždy ve skupině a nespustilo _check_fg_for_group_exit),
-                # nebo jen cursor pokud multi_selected je prázdné.
+                # Determine which items to add:
+                #   - označená okna (Insert) → aktivuje se první označené odshora
+                #   - žádné označení → přidá a aktivuje okno pod kurzorem
                 if self.multi_selected:
-                    indices_to_add = set(self.multi_selected) | {self.selected_index}
+                    indices_to_add = set(self.multi_selected)
+                    first_idx = min(self.multi_selected)
                 else:
                     indices_to_add = {self.selected_index}
+                    first_idx = self.selected_index
                 self.multi_selected = set()
                 for add_idx in indices_to_add:
                     if add_idx >= len(self.filtered_items):
@@ -2556,8 +2558,9 @@ class WindowSwitcherApp:
                                 for other_g in list(self.groups.keys()):
                                     if other_g != gname and other_g != "_":
                                         self._remove_win_from_group(win_obj, other_g)
-                # Activate the cursor window (item under cursor)
-                hwnd = item["hwnd"]
+                # Aktivuj první označené okno (nebo okno pod kurzorem pokud bez výběru)
+                activate_item = self.filtered_items[first_idx] if first_idx < len(self.filtered_items) else item
+                hwnd = activate_item["hwnd"]
             else:
                 # Add to group if specified (single window, normal mode)
                 if "add_to_group" in item:
