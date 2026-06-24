@@ -7,6 +7,8 @@ import threading
 import subprocess
 import json
 import shutil
+import random
+import queue
 import tkinter as tk
 from tkinter import messagebox
 import pystray
@@ -200,6 +202,10 @@ class WindowSwitcherApp:
         
         # Row-specific inline DWM thumbnail handles
         self.row_thumbnail_handles = []
+        # Reference na widgety řádků pro přebarvení bez rebuildu (perf)
+        self._row_widgets = []
+        # Naplánované (after) registrace náhledů – ruší se při dalším rebuildu
+        self._pending_thumb_after_ids = []
         self.selected_index = 0
         
         # Runtime session group tracking (mapping hwnd -> set of group_names)
@@ -274,7 +280,12 @@ class WindowSwitcherApp:
         self.tray_thread = threading.Thread(target=self._run_tray, daemon=True)
         self.tray_thread.start()
 
-        # Foreground window tracking – auto-exit group when user switches outside it
+        # Foreground window tracking – auto-exit group when user switches outside it.
+        # Hook běží ve vlastním vlákně; HWND předáváme na hlavní vlákno thread-safe
+        # frontou + virtuálním eventem (event_generate je bezpečné napříč vlákny,
+        # na rozdíl od root.after()).
+        self._fg_queue = queue.Queue()
+        self.root.bind("<<FgGroupCheck>>", self._on_fg_group_check_event)
         self._fg_hook_thread = threading.Thread(target=self._run_foreground_hook, daemon=True)
         self._fg_hook_thread.start()
 
@@ -746,7 +757,7 @@ class WindowSwitcherApp:
                 return True
             return not self.is_window_in_any_group(win)
 
-        # 2. Check runtime session HWND mapping as well
+        # 3. Check runtime session HWND mapping as well
         if group_name in self.runtime_hwnd_to_groups:
             if win["hwnd"] in self.runtime_hwnd_to_groups[group_name]:
                 return True
@@ -910,6 +921,7 @@ class WindowSwitcherApp:
 
     def get_open_windows(self):
         windows = []
+        pid_name_cache = {}  # PID -> název procesu (šetří OpenProcess pro okna téhož procesu)
         def callback(hwnd, lParam):
             if User32.IsWindowVisible(hwnd):
                 length = User32.GetWindowTextLengthW(hwnd)
@@ -939,15 +951,19 @@ class WindowSwitcherApp:
                             
                             pid = ctypes.c_ulong()
                             User32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-                            process_name = ""
-                            h_process = Kernel32.OpenProcess(0x1000, False, pid)
-                            if h_process:
-                                path_buf = ctypes.create_unicode_buffer(1024)
-                                p_size = ctypes.c_ulong(1024)
-                                if Kernel32.QueryFullProcessImageNameW(h_process, 0, path_buf, ctypes.byref(p_size)):
-                                    process_name = os.path.basename(path_buf.value)
-                                Kernel32.CloseHandle(h_process)
-                                
+                            if pid.value in pid_name_cache:
+                                process_name = pid_name_cache[pid.value]
+                            else:
+                                process_name = ""
+                                h_process = Kernel32.OpenProcess(0x1000, False, pid)
+                                if h_process:
+                                    path_buf = ctypes.create_unicode_buffer(1024)
+                                    p_size = ctypes.c_ulong(1024)
+                                    if Kernel32.QueryFullProcessImageNameW(h_process, 0, path_buf, ctypes.byref(p_size)):
+                                        process_name = os.path.basename(path_buf.value)
+                                    Kernel32.CloseHandle(h_process)
+                                pid_name_cache[pid.value] = process_name
+
                             # Cache WinSwitcherID hned při enumeraci – GetPropW je drahé volání
                             win_switcher_id = User32.GetPropW(hwnd, "WinSwitcherID")
                             windows.append({
@@ -975,7 +991,18 @@ class WindowSwitcherApp:
                 User32.RemovePropW(w["hwnd"], "WinSwitcherID")
                 w["win_switcher_id"] = None
 
+        # Vyčisti runtime cache od HWND zavřených oken – brání tomu, aby Windows
+        # recyklovaný HWND nového okna byl omylem považován za člena skupiny.
+        self._prune_runtime_hwnd_cache({w["hwnd"] for w in windows})
+
         return windows
+
+    def _prune_runtime_hwnd_cache(self, live_hwnds):
+        """Odstraní z runtime_hwnd_to_groups HWND, které už neexistují."""
+        for gname in list(self.runtime_hwnd_to_groups.keys()):
+            stale = self.runtime_hwnd_to_groups[gname] - live_hwnds
+            if stale:
+                self.runtime_hwnd_to_groups[gname] -= stale
 
     def on_hotkey_pressed(self):
         if self.is_visible:
@@ -1305,11 +1332,29 @@ class WindowSwitcherApp:
             self.selected_index = 0
         self.render_rows()
 
+    def _row_colors(self, idx):
+        """Vrátí (bg, fg) pro řádek podle stavu kurzoru / multi-výběru."""
+        if idx == self.selected_index:
+            return self.list_sel_bg, self.list_sel_fg
+        if idx in self.multi_selected:
+            return self.multi_sel_bg, "#cce4ff"
+        return self.list_bg, self.fg_color
+
+    def _cancel_pending_thumbnails(self):
+        for aid in self._pending_thumb_after_ids:
+            try:
+                self.root.after_cancel(aid)
+            except Exception:
+                pass
+        self._pending_thumb_after_ids = []
+
     def render_rows(self):
+        self._cancel_pending_thumbnails()
         self.clear_all_row_thumbnails()
+        self._row_widgets = []
         for widget in self.scroll_rows_frame.winfo_children():
             widget.destroy()
-            
+
         if not self.filtered_items:
             lbl = tk.Label(
                 self.scroll_rows_frame,
@@ -1322,31 +1367,24 @@ class WindowSwitcherApp:
             lbl.pack(fill=tk.X)
             self.clear_thumbnail()
             return
-            
+
         for idx, item in enumerate(self.filtered_items):
             is_selected = (idx == self.selected_index)
             is_multi = (idx in self.multi_selected)
-            if is_selected:
-                bg = self.list_sel_bg
-                fg = self.list_sel_fg
-            elif is_multi:
-                bg = self.multi_sel_bg
-                fg = "#cce4ff"
-            else:
-                bg = self.list_bg
-                fg = self.fg_color
-            
+            bg, fg = self._row_colors(idx)
+
             row_frame = tk.Frame(self.scroll_rows_frame, bg=bg, bd=0, padx=5, pady=4)
             row_frame.pack(fill=tk.X, expand=True)
-            
+
             row_frame.bind("<Button-1>", lambda e, idx=idx: self._on_row_click(idx))
-            
+
+            icon_lbl = None
             if self.show_list_thumbnails and item["type"] == "window":
                 # Create a mini dynamic live DWM Thumbnail container on the left, scaled dynamically via list_thumbnail_scale config (default 48x30, multiplied by list_thumbnail_scale)
                 scale_val = getattr(self, "list_thumbnail_scale", 5.0)
                 thumb_w = int(48 * scale_val)
                 thumb_h = int(30 * scale_val)
-                
+
                 mini_canvas = tk.Canvas(
                     row_frame,
                     width=thumb_w,
@@ -1358,9 +1396,10 @@ class WindowSwitcherApp:
                 )
                 mini_canvas.pack(side=tk.LEFT, padx=(5, 10))
                 mini_canvas.bind("<Button-1>", lambda e, idx=idx: self._on_row_click(idx))
-                
+
                 # Thumbnaily renderuj až 150ms po zastavení psaní (přeskočí zbytečné registrace DWM při psaní)
-                self.root.after(150, lambda mc=mini_canvas, hwnd=item["hwnd"]: self.render_row_thumbnail(mc, hwnd))
+                aid = self.root.after(150, lambda mc=mini_canvas, hwnd=item["hwnd"]: self.render_row_thumbnail(mc, hwnd))
+                self._pending_thumb_after_ids.append(aid)
             else:
                 if item["type"] == "command":
                     icon_text = "🚀"
@@ -1386,7 +1425,7 @@ class WindowSwitcherApp:
             if item["type"] == "window" and item.get("hwnd") and item["hwnd"] in self.anchored_hwnds:
                 if not item.get("aaa_mode") and not item.get("aai_mode"):
                     display_title = "📌 " + display_title
-                
+
             title_lbl = tk.Label(
                 row_frame,
                 text=display_title,
@@ -1398,18 +1437,52 @@ class WindowSwitcherApp:
             )
             title_lbl.pack(side=tk.LEFT, fill=tk.X, expand=True)
             title_lbl.bind("<Button-1>", lambda e, idx=idx: self._on_row_click(idx))
-            
+
+            self._row_widgets.append({
+                "frame": row_frame,
+                "icon": icon_lbl,
+                "title": title_lbl,
+                "item": item,
+            })
+
+        self.render_side_preview()
+        self.scroll_into_view()
+
+    def _restyle_rows(self):
+        """Přebarví existující řádky podle aktuálního výběru – BEZ rebuildu widgetů
+        a bez odregistrace/registrace DWM náhledů (perf při navigaci šipkami)."""
+        if not self._row_widgets or len(self._row_widgets) != len(self.filtered_items):
+            # Struktura se rozešla se seznamem – bezpečně přepadni na plný render.
+            self.render_rows()
+            return
+        for idx, rw in enumerate(self._row_widgets):
+            is_selected = (idx == self.selected_index)
+            is_multi = (idx in self.multi_selected)
+            bg, fg = self._row_colors(idx)
+            try:
+                rw["frame"].config(bg=bg)
+                if rw["icon"] is not None:
+                    item = rw["item"]
+                    if item.get("aaa_mode") or item.get("aai_mode"):
+                        rw["icon"].config(text="✓" if is_multi else "+")
+                    rw["icon"].config(bg=bg, fg=fg)
+                rw["title"].config(bg=bg, fg=fg,
+                                   font=("Segoe UI", 11, "bold" if is_selected else "normal"))
+            except Exception:
+                # Widget mezitím zanikl → kompletní render
+                self.render_rows()
+                return
         self.render_side_preview()
         self.scroll_into_view()
 
     def select_row_by_index(self, idx):
         self.selected_index = idx
-        self.render_rows()
+        self._restyle_rows()
 
     def _on_row_click(self, idx):
         """Jednoklik na řádek: vybere + aktivuje (v aaa/aai módu jen vybere)."""
         self.selected_index = idx
-        self.render_rows()
+        self._restyle_rows()
         if self.filtered_items and idx < len(self.filtered_items):
             item = self.filtered_items[idx]
             if item.get("aaa_mode") or item.get("aai_mode"):
@@ -1538,6 +1611,7 @@ class WindowSwitcherApp:
             print(f"Chyba vykreslení řádkového náhledu: {e}")
 
     def clear_all_row_thumbnails(self):
+        self._cancel_pending_thumbnails()
         for thumb in self.row_thumbnail_handles:
             try:
                 DwmApi.DwmUnregisterThumbnail(thumb["handle"])
@@ -1667,7 +1741,7 @@ class WindowSwitcherApp:
             self.selected_index = (self.selected_index + 1) % len(self.filtered_items)
             if in_multi_mode and (event.state & 0x1):  # Shift – toggle novou pozici
                 self.multi_selected ^= {self.selected_index}
-            self.render_rows()
+            self._restyle_rows()
         return "break"
 
     def move_selection_up(self, event):
@@ -1681,7 +1755,7 @@ class WindowSwitcherApp:
             self.selected_index = (self.selected_index - 1) % len(self.filtered_items)
             if in_multi_mode and (event.state & 0x1):  # Shift – toggle novou pozici
                 self.multi_selected ^= {self.selected_index}
-            self.render_rows()
+            self._restyle_rows()
         return "break"
 
     def _on_entry_keypress(self, event):
@@ -1702,7 +1776,7 @@ class WindowSwitcherApp:
         if in_multi_mode:
             self.multi_selected ^= {self.selected_index}
             self.selected_index = (self.selected_index + 1) % len(self.filtered_items)
-            self.render_rows()
+            self._restyle_rows()
         return "break"
 
     def _on_delete_window(self, event=None):
@@ -2084,13 +2158,17 @@ class WindowSwitcherApp:
         finally:
             self._watch_timer_id = self.root.after(2000, self._watch_new_windows)
 
-    def _window_title_base(self, hwnd):
+    def _window_title_full(self, hwnd):
+        """Vrátí aktuální plný titulek okna (včetně případného WinSwitcher suffixu)."""
         length = User32.GetWindowTextLengthW(hwnd)
         if length <= 0:
             return ""
         buffer = ctypes.create_unicode_buffer(length + 1)
         User32.GetWindowTextW(hwnd, buffer, length + 1)
-        title = buffer.value
+        return buffer.value
+
+    def _window_title_base(self, hwnd):
+        title = self._window_title_full(hwnd)
         marker = " [WinSwitcher: "
         if title.endswith("]") and marker in title:
             idx = title.rfind(marker)
@@ -2117,7 +2195,9 @@ class WindowSwitcherApp:
         groups = self.get_groups_for_window(win)
         suffix = self._window_group_suffix(groups)
         new_title = title + suffix
-        if new_title != self._window_title_base(win["hwnd"]):
+        # Porovnej proti AKTUÁLNÍMU PLNÉMU titulku (ne proti strhnuté bázi) –
+        # jinak by se titulek se suffixem přepisoval při každém refreshi.
+        if new_title != self._window_title_full(win["hwnd"]):
             User32.SetWindowTextW(win["hwnd"], new_title)
         win["title"] = title
         win["groups"] = groups
@@ -2132,7 +2212,6 @@ class WindowSwitcherApp:
             self.groups[gname] = []
         prop_id = win.get("win_switcher_id") or User32.GetPropW(win["hwnd"], "WinSwitcherID")
         if not prop_id:
-            import random
             prop_id = random.randint(1000000, 99999999)
             User32.SetPropW(win["hwnd"], "WinSwitcherID", prop_id)
         else:
@@ -2171,9 +2250,13 @@ class WindowSwitcherApp:
         to_remove = []
         for entry in self.groups[gname]:
             if isinstance(entry, dict):
-                if prop_id and entry.get("id") == prop_id:
-                    to_remove.append(entry)
+                if entry.get("id"):
+                    # Záznam má unikátní ID – odeber jen při přesné shodě ID.
+                    # (Dříve fallback podle process+class smazal i ostatní okna téže aplikace.)
+                    if prop_id and entry.get("id") == prop_id:
+                        to_remove.append(entry)
                 elif entry.get("process") == win.get("process") and entry.get("class") == win.get("class"):
+                    # Legacy záznam bez ID – jediná možnost je match podle process+class.
                     to_remove.append(entry)
             else:
                 if entry == win.get("title"):
@@ -2385,8 +2468,12 @@ class WindowSwitcherApp:
             User32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
             if pid.value == my_pid:
                 return
-            # Plánuj kontrolu na hlavním vlákně (thread-safe přístup k tk a all_windows)
-            self.root.after(0, lambda h=hwnd: self._check_fg_for_group_exit(h))
+            # Předej HWND hlavnímu vláknu thread-safe cestou (fronta + virtuální event).
+            self._fg_queue.put(hwnd)
+            try:
+                self.root.event_generate("<<FgGroupCheck>>", when="tail")
+            except Exception:
+                pass
 
         proc = WinEventProcType(_cb)
         self._fg_proc_ref = proc
@@ -2407,6 +2494,15 @@ class WindowSwitcherApp:
         if hook:
             User32.UnhookWinEvent(hook)
         self._fg_hook_handle = None
+
+    def _on_fg_group_check_event(self, event=None):
+        """Hlavní vlákno: vyprázdní frontu HWND z foreground hooku."""
+        try:
+            while True:
+                hwnd = self._fg_queue.get_nowait()
+                self._check_fg_for_group_exit(hwnd)
+        except queue.Empty:
+            pass
 
     def _check_fg_for_group_exit(self, hwnd):
         """Spouští se na hlavním vlákně po změně foreground okna.
@@ -2614,7 +2710,6 @@ class WindowSwitcherApp:
                     # Retrieve or set a permanent random 32-bit WinSwitcherID
                     prop_id = User32.GetPropW(item["hwnd"], "WinSwitcherID")
                     if not prop_id:
-                        import random
                         prop_id = random.randint(1000000, 99999999)
                         User32.SetPropW(item["hwnd"], "WinSwitcherID", prop_id)
                     else:
@@ -2727,7 +2822,6 @@ class WindowSwitcherApp:
                 # Retrieve or set a permanent random 32-bit WinSwitcherID
                 prop_id = User32.GetPropW(self.prev_active_hwnd, "WinSwitcherID")
                 if not prop_id:
-                    import random
                     prop_id = random.randint(1000000, 99999999)
                     User32.SetPropW(self.prev_active_hwnd, "WinSwitcherID", prop_id)
                 else:
