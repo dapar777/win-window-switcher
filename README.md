@@ -239,6 +239,12 @@ odshora.
 okna ho nepřekryjí (rezervuje se odpovídající okraj pracovní plochy). Opakovaným příkazem se
 okno odkotví. Ukotvení přežije i pád aplikace – při dalším startu se neplatné kotvy uklidí.
 
+Rezervace okraje se automaticky uvolní, když:
+- ukotvené okno **zavřeš** (nezůstane po něm prázdný pruh);
+- u kotvy vázané na skupinu (`gg<x> kkk`) **opustíš nebo přepneš skupinu**, případně skupinu
+  smažeš. Globální kotvy (`kka`) a kotvy bez skupiny (samotné `kkk`) zůstávají, dokud je
+  ručně neodkotvíš nebo okno nezavřeš.
+
 ---
 
 ## 🆕 Chování při vzniku nového okna

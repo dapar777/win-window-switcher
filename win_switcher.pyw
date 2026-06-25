@@ -2278,6 +2278,7 @@ class WindowSwitcherApp:
         if not self.groups[gname] and gname != "_":
             del self.groups[gname]
             self.runtime_hwnd_to_groups.pop(gname, None)
+            self._release_group_anchors(gname)  # skupina zanikla → uvolni její kotvy
         self.save_groups()
         self._refresh_window_group_titles()
 
@@ -3019,6 +3020,7 @@ class WindowSwitcherApp:
                 del self.groups[gname]
                 self.runtime_hwnd_to_groups.pop(gname, None)
                 self.views.pop(gname, None)
+                self._release_group_anchors(gname)  # uvolni rezervaci kotev mazané skupiny
                 if self.last_group == gname:
                     self.last_group = "_"
                 if self.last_activated_group == gname:
