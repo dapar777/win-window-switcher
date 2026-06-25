@@ -2579,11 +2579,31 @@ class WindowSwitcherApp:
         if not self.is_window_in_group(win_obj, self.last_activated_group):
             self._leave_active_group()
 
+    def _release_group_anchors(self, group_name):
+        """Odkotví okna ukotvená v kontextu dané skupiny a uvolní jejich rezervaci
+        work area. Globální kotvy (kka) a kotvy bez skupiny (plain kkk) zůstávají."""
+        if not group_name:
+            return
+        to_release = [h for h, d in list(self.anchored_hwnds.items())
+                      if not d.get("global_anchor") and d.get("group_ctx") == group_name]
+        if not to_release:
+            return
+        for h in to_release:
+            try:
+                User32.SetWindowPos(h, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE_FLAG)
+                User32.RemovePropW(h, "WinSwitcherAnchored")
+            except Exception:
+                pass
+            self.anchored_hwnds.pop(h, None)
+        self._apply_anchor_workarea()  # přepočítá rezervaci (nebo plně obnoví work area)
+
     def _leave_active_group(self):
-        """Opustí aktivní skupinu: obnoví taskbar, tray a OSD."""
+        """Opustí aktivní skupinu: obnoví taskbar, tray, OSD a kotvy skupiny."""
+        leaving = self.last_activated_group
         self.last_activated_group = ""
         self.last_group = ""  # aby switcher příště otevřel na všech oknech
         self._restore_all_taskbar_icons()
+        self._release_group_anchors(leaving)
         self.root.after(0, lambda: self._update_tray(""))
         self.root.after(0, lambda: self._update_osd(""))
 
@@ -2802,6 +2822,7 @@ class WindowSwitcherApp:
                 self.new_window_action = "ask"
             if activated_group != self.last_activated_group:
                 self.declined_new_windows.clear()
+                self._release_group_anchors(self.last_activated_group)
             self.last_activated_group = activated_group
             self._update_taskbar_visibility(activated_group, explicit_hwnds=group_hwnds)
             self.activated_windows_hwnds = set(w["hwnd"] for w in self.all_windows)
@@ -2893,6 +2914,7 @@ class WindowSwitcherApp:
                     self.new_window_action = "ask"
                 if activated_group != self.last_activated_group:
                     self.declined_new_windows.clear()
+                    self._release_group_anchors(self.last_activated_group)
                 self.last_activated_group = activated_group
                 self._update_taskbar_visibility(activated_group)
                 self.activated_windows_hwnds = set(w["hwnd"] for w in self.all_windows)
@@ -2950,6 +2972,7 @@ class WindowSwitcherApp:
                     self.new_window_action = "ask"
                 if activated_group != self.last_activated_group:
                     self.declined_new_windows.clear()
+                    self._release_group_anchors(self.last_activated_group)
                 self.last_activated_group = activated_group
                 self._update_taskbar_visibility(activated_group)
                 self.activated_windows_hwnds = set(w["hwnd"] for w in self.all_windows)
