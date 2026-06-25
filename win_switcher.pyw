@@ -33,6 +33,8 @@ User32.SetForegroundWindow.argtypes = [ctypes.c_void_p]
 User32.BringWindowToTop.argtypes = [ctypes.c_void_p]
 User32.RegisterHotKey.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_uint, ctypes.c_uint]
 User32.UnregisterHotKey.argtypes = [ctypes.c_void_p, ctypes.c_int]
+User32.IsWindow.argtypes = [ctypes.c_void_p]
+User32.IsWindow.restype = ctypes.c_bool
 User32.keybd_event.argtypes = [ctypes.c_byte, ctypes.c_byte, ctypes.c_ulong, ctypes.c_void_p]
 User32.IsIconic.argtypes = [ctypes.c_void_p]
 User32.GetAncestor.argtypes = [ctypes.c_void_p, ctypes.c_uint]
@@ -299,6 +301,8 @@ class WindowSwitcherApp:
         self.root.after(3000, self._watch_new_windows)
         # Trvalá kontrola viditelnosti OSD na všech monitorech (proti zmizení).
         self.root.after(2000, self._osd_watchdog)
+        # Hlídání zavřených ukotvených oken – uvolní po nich rezervaci work area.
+        self.root.after(1500, self._anchor_watchdog)
 
     def _get_monitors(self):
         """Vrátí seznam monitorů jako (x, y, w, h)."""
@@ -2303,6 +2307,25 @@ class WindowSwitcherApp:
             User32.RemovePropW(hwnd, "WinSwitcherAnchored")
             del self.anchored_hwnds[hwnd]
         self._apply_anchor_workarea()  # Recompute with remaining anchors (or full restore)
+
+    def _anchor_watchdog(self):
+        """Periodicky kontroluje, zda ukotvená okna stále existují. Když uživatel
+        ukotvené okno zavře (křížkem), uvolní jeho rezervaci work area (AppBar),
+        aby po něm nezůstal prázdný pruh."""
+        try:
+            if self.anchored_hwnds:
+                dead = [h for h in list(self.anchored_hwnds.keys()) if not User32.IsWindow(h)]
+                for h in dead:
+                    try:
+                        User32.RemovePropW(h, "WinSwitcherAnchored")
+                    except Exception:
+                        pass
+                    del self.anchored_hwnds[h]
+                if dead:
+                    # Přepočítá rezervaci pro zbývající kotvy, nebo plně obnoví work area.
+                    self._apply_anchor_workarea()
+        finally:
+            self.root.after(1500, self._anchor_watchdog)
 
     def _apply_anchor_workarea(self):
         """Registruje AppBar okna pro každou ukotvenu stranu monitoru, aby
