@@ -241,9 +241,12 @@ okno odkotví. Ukotvení přežije i pád aplikace – při dalším startu se n
 
 Rezervace okraje se automaticky uvolní, když:
 - ukotvené okno **zavřeš** (nezůstane po něm prázdný pruh);
-- u kotvy vázané na skupinu (`gg<x> kkk`) **opustíš nebo přepneš skupinu**, případně skupinu
-  smažeš. Globální kotvy (`kka`) a kotvy bez skupiny (samotné `kkk`) zůstávají, dokud je
-  ručně neodkotvíš nebo okno nezavřeš.
+- u kotvy vázané na skupinu (`gg<x> kkk`) **opustíš nebo přepneš skupinu**. Kotva se ale jen
+  „uspí" – po **návratu do skupiny se okno znovu automaticky ukotví**. Trvale ji zrušíš
+  opětovným `gg<x> kkk` (odkotvení), zavřením okna nebo smazáním skupiny.
+
+Globální kotvy (`kka`) a kotvy bez skupiny (samotné `kkk`) zůstávají aktivní stále, dokud je
+ručně neodkotvíš nebo okno nezavřeš.
 
 ---
 

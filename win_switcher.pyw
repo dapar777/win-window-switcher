@@ -242,6 +242,9 @@ class WindowSwitcherApp:
         self.multi_sel_bg = "#1e3e5e"      # bg for multi-selected (not cursor) rows
         # Window anchoring (kkk / kka)
         self.anchored_hwnds = {}           # hwnd -> {"group_ctx": str|None, "global_anchor": bool}
+        # Zapamatovaná přání ukotvení podle skupiny – při opuštění skupiny se kotva
+        # uvolní (žádný prázdný pruh), ale po návratu do skupiny se znovu aplikuje.
+        self.group_anchor_intents = {}     # group_name -> set(hwnd)
         self._anchor_hook_handle = None
         self._anchor_proc_ref = None       # Keep WinEventProc from GC
         self._anchor_hook_thread = None
@@ -2278,7 +2281,7 @@ class WindowSwitcherApp:
         if not self.groups[gname] and gname != "_":
             del self.groups[gname]
             self.runtime_hwnd_to_groups.pop(gname, None)
-            self._release_group_anchors(gname)  # skupina zanikla → uvolni její kotvy
+            self._release_group_anchors(gname, forget=True)  # skupina zanikla → uvolni a zapomeň kotvy
         self.save_groups()
         self._refresh_window_group_titles()
 
@@ -2298,6 +2301,9 @@ class WindowSwitcherApp:
             "global_anchor": global_anchor,
             "rect": (rect.left, rect.top, rect.right, rect.bottom),
         }
+        # Zapamatuj přání ukotvení pro skupinu, aby se kotva po návratu obnovila.
+        if group_ctx and not global_anchor:
+            self.group_anchor_intents.setdefault(group_ctx, set()).add(hwnd)
         self._apply_anchor_workarea()
         self._ensure_anchor_hook_running()
 
@@ -2307,6 +2313,9 @@ class WindowSwitcherApp:
             User32.SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE_FLAG)
             User32.RemovePropW(hwnd, "WinSwitcherAnchored")
             del self.anchored_hwnds[hwnd]
+        # Explicitní odkotvení uživatelem → zapomeň i přání pro všechny skupiny.
+        for s in self.group_anchor_intents.values():
+            s.discard(hwnd)
         self._apply_anchor_workarea()  # Recompute with remaining anchors (or full restore)
 
     def _anchor_watchdog(self):
@@ -2580,15 +2589,17 @@ class WindowSwitcherApp:
         if not self.is_window_in_group(win_obj, self.last_activated_group):
             self._leave_active_group()
 
-    def _release_group_anchors(self, group_name):
+    def _release_group_anchors(self, group_name, forget=False):
         """Odkotví okna ukotvená v kontextu dané skupiny a uvolní jejich rezervaci
-        work area. Globální kotvy (kka) a kotvy bez skupiny (plain kkk) zůstávají."""
+        work area. Globální kotvy (kka) a kotvy bez skupiny (plain kkk) zůstávají.
+
+        forget=False (opuštění skupiny): přání ukotvení se zapamatuje, takže po
+        návratu do skupiny se kotva znovu aplikuje.
+        forget=True (smazání skupiny): přání se zahodí natrvalo."""
         if not group_name:
             return
         to_release = [h for h, d in list(self.anchored_hwnds.items())
                       if not d.get("global_anchor") and d.get("group_ctx") == group_name]
-        if not to_release:
-            return
         for h in to_release:
             try:
                 User32.SetWindowPos(h, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE_FLAG)
@@ -2596,7 +2607,41 @@ class WindowSwitcherApp:
             except Exception:
                 pass
             self.anchored_hwnds.pop(h, None)
-        self._apply_anchor_workarea()  # přepočítá rezervaci (nebo plně obnoví work area)
+        if forget:
+            self.group_anchor_intents.pop(group_name, None)
+        if to_release:
+            self._apply_anchor_workarea()  # přepočítá rezervaci (nebo plně obnoví work area)
+
+    def _reapply_group_anchors(self, group_name):
+        """Po vstupu do skupiny znovu ukotví okna, která v ní byla ukotvená dříve."""
+        intents = self.group_anchor_intents.get(group_name)
+        if not intents:
+            return
+        changed = False
+        for h in list(intents):
+            if not User32.IsWindow(h):
+                intents.discard(h)        # okno už neexistuje – zapomeň ho
+                continue
+            if h in self.anchored_hwnds:
+                continue                  # už je ukotvené
+            try:
+                User32.SetWindowPos(h, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE_FLAG)
+                User32.SetPropW(h, "WinSwitcherAnchored", ctypes.c_void_p(1))
+                rect = RECT()
+                User32.GetWindowRect(h, ctypes.byref(rect))
+                self.anchored_hwnds[h] = {
+                    "group_ctx": group_name,
+                    "global_anchor": False,
+                    "rect": (rect.left, rect.top, rect.right, rect.bottom),
+                }
+                changed = True
+            except Exception:
+                pass
+        if not intents:
+            self.group_anchor_intents.pop(group_name, None)
+        if changed:
+            self._apply_anchor_workarea()
+            self._ensure_anchor_hook_running()
 
     def _leave_active_group(self):
         """Opustí aktivní skupinu: obnoví taskbar, tray, OSD a kotvy skupiny."""
@@ -2825,6 +2870,8 @@ class WindowSwitcherApp:
                 self.declined_new_windows.clear()
                 self._release_group_anchors(self.last_activated_group)
             self.last_activated_group = activated_group
+            if activated_group:
+                self._reapply_group_anchors(activated_group)
             self._update_taskbar_visibility(activated_group, explicit_hwnds=group_hwnds)
             self.activated_windows_hwnds = set(w["hwnd"] for w in self.all_windows)
             self.root.after(0, lambda g=activated_group: self._update_tray(g))
@@ -2917,6 +2964,8 @@ class WindowSwitcherApp:
                     self.declined_new_windows.clear()
                     self._release_group_anchors(self.last_activated_group)
                 self.last_activated_group = activated_group
+                if activated_group:
+                    self._reapply_group_anchors(activated_group)
                 self._update_taskbar_visibility(activated_group)
                 self.activated_windows_hwnds = set(w["hwnd"] for w in self.all_windows)
                 self.root.after(0, lambda g=activated_group: self._update_tray(g))
@@ -2975,6 +3024,8 @@ class WindowSwitcherApp:
                     self.declined_new_windows.clear()
                     self._release_group_anchors(self.last_activated_group)
                 self.last_activated_group = activated_group
+                if activated_group:
+                    self._reapply_group_anchors(activated_group)
                 self._update_taskbar_visibility(activated_group)
                 self.activated_windows_hwnds = set(w["hwnd"] for w in self.all_windows)
                 self.root.after(0, lambda g=activated_group: self._update_tray(g))
@@ -3020,7 +3071,7 @@ class WindowSwitcherApp:
                 del self.groups[gname]
                 self.runtime_hwnd_to_groups.pop(gname, None)
                 self.views.pop(gname, None)
-                self._release_group_anchors(gname)  # uvolni rezervaci kotev mazané skupiny
+                self._release_group_anchors(gname, forget=True)  # uvolni a zapomeň kotvy mazané skupiny
                 if self.last_group == gname:
                     self.last_group = "_"
                 if self.last_activated_group == gname:
