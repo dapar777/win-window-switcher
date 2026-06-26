@@ -2331,6 +2331,10 @@ class WindowSwitcherApp:
                     except Exception:
                         pass
                     del self.anchored_hwnds[h]
+                    # Zapomeň i přání ukotvení (jinak by recyklovaný HWND mohl po
+                    # návratu do skupiny ukotvit cizí okno).
+                    for s in self.group_anchor_intents.values():
+                        s.discard(h)
                 if dead:
                     # Přepočítá rezervaci pro zbývající kotvy, nebo plně obnoví work area.
                     self._apply_anchor_workarea()
