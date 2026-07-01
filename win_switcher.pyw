@@ -225,6 +225,7 @@ class WindowSwitcherApp:
         self.activated_windows_hwnds = set()  # HWNDs seen when group was last activated
         self.declined_new_windows = set()    # HWNDs user declined to add (reset on group switch)
         self._pending_ask_hwnds = set()       # HWNDs for which ask-dialog is currently open
+        self._watch_in_progress = False       # re-entrancy guard (modální dialog pumpuje event loop)
         self.pending_new_windows = []  # New windows not yet in any group (for 'ask' mode)
         self.new_window_action = "never"  # Config: never | ask | always | leave
         self.new_window_auto_yes      = None  # compiled regex: auto-add matching titles
@@ -2105,6 +2106,13 @@ class WindowSwitcherApp:
 
     def _watch_new_windows(self):
         """Periodicky hlídá nová okna na pozadí a ptá se uživatele (ask mode) nebo rovnou přidá (always)."""
+        # Re-entrance guard: modální ask-dialog spouští přes wait_window() vnořený
+        # event loop, ve kterém může foreground hook (after(150)) zavolat tuto
+        # metodu znovu. Bez pojistky by se pak stejné okno mohlo zeptat vícekrát
+        # (vnitřní běh zpracuje okno, na které vnější smyčka ještě nedošla).
+        if self._watch_in_progress:
+            return
+        self._watch_in_progress = True
         try:
             if self.new_window_action != "never" and self.last_activated_group and self.activated_windows_hwnds:
                 current_windows = self.get_open_windows()
@@ -2172,6 +2180,7 @@ class WindowSwitcherApp:
                             else:  # "no" – přeskoč toto okno, příště (jiné okno) se zeptá
                                 self.declined_new_windows.add(w["hwnd"])
         finally:
+            self._watch_in_progress = False
             self._watch_timer_id = self.root.after(2000, self._watch_new_windows)
 
     def _window_title_full(self, hwnd):
