@@ -2309,18 +2309,21 @@ class WindowSwitcherApp:
         Přání (temp_group_hwnds) zůstává, takže se po opětovné aktivaci vrátí."""
         if not self.temp_group_hwnds:
             return
-        changed_group = None
-        for thwnd, tgroup in list(self.temp_group_hwnds.items()):
-            cache = self.runtime_hwnd_to_groups.setdefault(tgroup, set())
-            active = (thwnd == fg_hwnd and tgroup == self.last_activated_group)
-            if active and thwnd not in cache:
-                cache.add(thwnd)
-                changed_group = tgroup
-            elif not active and thwnd in cache:
-                cache.discard(thwnd)
-                changed_group = tgroup
-        if changed_group and changed_group == self.last_activated_group:
-            self._update_taskbar_visibility(self.last_activated_group)
+        try:
+            changed_group = None
+            for thwnd, tgroup in list(self.temp_group_hwnds.items()):
+                cache = self.runtime_hwnd_to_groups.setdefault(tgroup, set())
+                active = (thwnd == fg_hwnd and tgroup == self.last_activated_group)
+                if active and thwnd not in cache:
+                    cache.add(thwnd)
+                    changed_group = tgroup
+                elif not active and thwnd in cache:
+                    cache.discard(thwnd)
+                    changed_group = tgroup
+            if changed_group and changed_group == self.last_activated_group:
+                self._update_taskbar_visibility(self.last_activated_group)
+        except Exception:
+            pass
 
     def _clear_temp_group_windows(self, group_name=None):
         """Zapomene dočasná členství (Ano dočasně) a vyřadí je z runtime cache.
@@ -3331,6 +3334,7 @@ class WindowSwitcherApp:
                 del self.groups[gname]
                 self.runtime_hwnd_to_groups.pop(gname, None)
                 self.views.pop(gname, None)
+                self._clear_temp_group_windows(gname)  # zapomeň dočasné členy mazané skupiny
                 self._release_group_anchors(gname, forget=True)  # uvolni a zapomeň kotvy mazané skupiny
                 if self.last_group == gname:
                     self.last_group = "_"
