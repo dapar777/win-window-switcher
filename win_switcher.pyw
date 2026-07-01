@@ -2432,12 +2432,18 @@ class WindowSwitcherApp:
                     workarea_dirty = True
                 if dragging:
                     continue  # geometrie počká, až uživatel pustí myš
-                # 2a) Minimalizované okno vrať zpět (kotva má zůstat viditelná) –
-                #     má přednost před maximalizací.
+                # 2a) Minimalizované okno vrať zpět na domovskou (nemaximalizovanou)
+                #     pozici – má přednost před maximalizací. Když bylo okno
+                #     minimalizované z maxima, vynutíme normální stav (jinak by se
+                #     obnovilo zpět jako maximalizované, ne do ukotvené polohy).
                 if iconic:
                     User32.ShowWindow(hwnd, SW_SHOWNOACTIVATE)
+                    st = User32.GetWindowLongW(hwnd, GWL_STYLE)
+                    if st & WS_MAXIMIZE:
+                        User32.SetWindowLongW(hwnd, GWL_STYLE, st & ~WS_MAXIMIZE)
                     User32.SetWindowPos(hwnd, None, ax1, ay1, ax2 - ax1, ay2 - ay1,
-                                        SWP_NOZORDER | SWP_NOACTIVATE)
+                                        SWP_NOZORDER | SWP_NOACTIVATE | 0x0020)  # +FRAMECHANGED
+                    data["maximized"] = False
                     continue
                 # 2b) Maximalizaci povolujeme – necháme okno velké. Rezervaci pruhu
                 #     jsme právě zrušili (workarea_dirty), takže okno po přepočtu
@@ -2458,15 +2464,27 @@ class WindowSwitcherApp:
                 pass
         if workarea_dirty:
             # Změnil se stav maximalizace některé kotvy → přepočítej rezervaci
-            # (maximalizované kotvy pruh nerezervují). Nově maximalizovaná okna
-            # pak re-maximalizuj, aby vyplnila celý monitor (bez vlastního pruhu).
+            # (maximalizované kotvy pruh nerezervují). Maximalizovaná okna pak
+            # roztáhni na celý monitor (rezervace pruhu už neplatí). Přes
+            # SWP_NOACTIVATE, aby to nekradlo fokus (uživatel mohl mezitím
+            # kliknout jinam).
             self._apply_anchor_workarea()
+            monitors = self._get_monitors()
             for hwnd, data in list(self.anchored_hwnds.items()):
-                if data.get("maximized"):
-                    try:
-                        User32.ShowWindow(hwnd, 3)  # SW_MAXIMIZE
-                    except Exception:
-                        pass
+                if not data.get("maximized"):
+                    continue
+                try:
+                    ax1, ay1, ax2, ay2 = data["rect"]
+                    cx, cy = (ax1 + ax2) // 2, (ay1 + ay2) // 2
+                    mon = next(((mx, my, mw, mh) for mx, my, mw, mh in monitors
+                                if mx <= cx < mx + mw and my <= cy < my + mh), None)
+                    if mon is None:
+                        mon = monitors[0]
+                    mx, my, mw, mh = mon
+                    User32.SetWindowPos(hwnd, None, mx, my, mw, mh,
+                                        SWP_NOZORDER | SWP_NOACTIVATE)
+                except Exception:
+                    pass
 
     def _apply_anchor_workarea(self):
         """Registruje AppBar okna pro každou ukotvenu stranu monitoru, aby
