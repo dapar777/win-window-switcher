@@ -40,6 +40,8 @@ User32.IsWindow.argtypes = [ctypes.c_void_p]
 User32.IsWindow.restype = ctypes.c_bool
 User32.keybd_event.argtypes = [ctypes.c_byte, ctypes.c_byte, ctypes.c_ulong, ctypes.c_void_p]
 User32.IsIconic.argtypes = [ctypes.c_void_p]
+User32.GetAsyncKeyState.argtypes = [ctypes.c_int]
+User32.GetAsyncKeyState.restype = ctypes.c_short
 User32.GetAncestor.argtypes = [ctypes.c_void_p, ctypes.c_uint]
 User32.GetClassNameW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_int]
 User32.GetWindowThreadProcessId.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong)]
@@ -163,6 +165,7 @@ WS_EX_APPWINDOW = 0x00040000
 GW_OWNER = 4
 SW_RESTORE = 9
 SW_SHOW = 5
+SW_SHOWNOACTIVATE = 4
 WM_HOTKEY = 0x0312
 HWND_TOPMOST   = -1
 HWND_NOTOPMOST = -2
@@ -310,7 +313,7 @@ class WindowSwitcherApp:
         # Trvalá kontrola viditelnosti OSD na všech monitorech (proti zmizení).
         self.root.after(2000, self._osd_watchdog)
         # Hlídání zavřených ukotvených oken – uvolní po nich rezervaci work area.
-        self.root.after(1500, self._anchor_watchdog)
+        self.root.after(800, self._anchor_watchdog)
 
     def _get_monitors(self):
         """Vrátí seznam monitorů jako (x, y, w, h)."""
@@ -2384,32 +2387,32 @@ class WindowSwitcherApp:
                     for h in list(hwnds):
                         self._clear_orphan_anchor(h)
         finally:
-            self.root.after(1500, self._anchor_watchdog)
+            self.root.after(800, self._anchor_watchdog)
 
     def _maintain_anchored_windows(self):
-        """Aktivně udržuje žijící ukotvená okna, aby po nich nezůstával prázdný
-        rezervovaný pruh work area:
+        """Aktivně udržuje žijící ukotvená okna:
           1) Znovu nastaví HWND_TOPMOST, pokud okno ztratilo příznak WS_EX_TOPMOST
              (typicky poté, co nad ně vyskočila full-screen VDI/Citrix relace).
-          2) Vrátí okno na uloženou pozici, pokud ho něco odsunulo (např. změna
-             rozlišení při návratu z full-screenu).
-        Okno, které je právě v popředí, se přeskočí celé – uživatel s ním
-        pracuje (nebo ho zrovna dotáhl myší). Tím se vyhneme boji s ručním
-        přesunem: než uživatel přepne fokus jinam, anchor hook (MOVESIZEEND)
-        stihne uložený rect aktualizovat, takže žádný „drift" nevznikne."""
+          2) Geometrie kotvy: MAXIMALIZACI POVOLÍME (okno může být přes celou
+             obrazovku), ale jakákoli jiná změna vrátí okno do ukotvené polohy –
+             minimalizované obnoví, přesunuté/zmenšené srovná zpět na domovský rect.
+        Domovský rect je pevný (nastavený při ukotvení), takže „ukotvená poloha"
+        se nemění. Když uživatel právě táhne myší (levé tlačítko dole), geometrie
+        se neupravuje, aby okno neposkakovalo – po puštění to srovná anchor hook
+        (MOVESIZEEND) nebo příští tik."""
         if not self.anchored_hwnds:
             return
         WS_MAXIMIZE    = 0x01000000
         GWL_STYLE      = -16
         SWP_NOZORDER   = 0x0004
         SWP_NOACTIVATE = 0x0010
-        fg = User32.GetForegroundWindow()
+        # Levé tlačítko myši dole = uživatel právě táhne/mění velikost → nezasahuj.
+        dragging = bool(User32.GetAsyncKeyState(0x01) & 0x8000)
+        workarea_dirty = False
         for hwnd, data in list(self.anchored_hwnds.items()):
             try:
-                if hwnd == fg:
-                    continue  # aktivní okno uživatele – nesahej na něj
-                if not User32.IsWindow(hwnd) or User32.IsIconic(hwnd):
-                    continue  # mrtvá řeší watchdog výše, minimalizovaná respektujeme
+                if not User32.IsWindow(hwnd):
+                    continue  # mrtvá okna řeší watchdog výše
                 ax1, ay1, ax2, ay2 = data["rect"]
                 if ax1 <= -30000 or ay1 <= -30000:
                     continue  # nesmyslný/mimoobrazovkový rect – okno nepřesouvej
@@ -2418,18 +2421,52 @@ class WindowSwitcherApp:
                 if not (ex_style & WS_EX_TOPMOST):
                     User32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0,
                                         SWP_NOMOVE | SWP_NOSIZE_FLAG | SWP_NOACTIVATE)
-                # 2) Vrať okno na místo, pokud ho něco výrazně odsunulo.
+                # Sleduj změnu stavu maximalizace – při ní se mění rezervace pruhu.
+                # Minimalizované okno nepovažujeme za maximalizované (i když má
+                # WS_MAXIMIZE zděděné z „minimalizuj z maxima") – vracíme ho domů.
+                iconic = bool(User32.IsIconic(hwnd))
+                style = User32.GetWindowLongW(hwnd, GWL_STYLE)
+                is_max = bool(style & WS_MAXIMIZE) and not iconic
+                if is_max != data.get("maximized", False):
+                    data["maximized"] = is_max
+                    workarea_dirty = True
+                if dragging:
+                    continue  # geometrie počká, až uživatel pustí myš
+                # 2a) Minimalizované okno vrať zpět (kotva má zůstat viditelná) –
+                #     má přednost před maximalizací.
+                if iconic:
+                    User32.ShowWindow(hwnd, SW_SHOWNOACTIVATE)
+                    User32.SetWindowPos(hwnd, None, ax1, ay1, ax2 - ax1, ay2 - ay1,
+                                        SWP_NOZORDER | SWP_NOACTIVATE)
+                    continue
+                # 2b) Maximalizaci povolujeme – necháme okno velké. Rezervaci pruhu
+                #     jsme právě zrušili (workarea_dirty), takže okno po přepočtu
+                #     vyplní celý monitor (viz re-maximalizace pod smyčkou).
+                if is_max:
+                    continue
+                # 2c) Jinak drž okno na domovské pozici i velikosti (posun/zmenšení
+                #     se vrátí zpět).
                 cur = RECT()
                 if User32.GetWindowRect(hwnd, ctypes.byref(cur)):
-                    if abs(cur.left - ax1) > 5 or abs(cur.top - ay1) > 5:
-                        style = User32.GetWindowLongW(hwnd, GWL_STYLE)
-                        if style & WS_MAXIMIZE:
-                            User32.SetWindowLongW(hwnd, GWL_STYLE, style & ~WS_MAXIMIZE)
+                    if (abs(cur.left - ax1) > 5 or abs(cur.top - ay1) > 5 or
+                            abs((cur.right - cur.left) - (ax2 - ax1)) > 5 or
+                            abs((cur.bottom - cur.top) - (ay2 - ay1)) > 5):
                         User32.SetWindowPos(hwnd, None, ax1, ay1,
                                             ax2 - ax1, ay2 - ay1,
                                             SWP_NOZORDER | SWP_NOACTIVATE)
             except Exception:
                 pass
+        if workarea_dirty:
+            # Změnil se stav maximalizace některé kotvy → přepočítej rezervaci
+            # (maximalizované kotvy pruh nerezervují). Nově maximalizovaná okna
+            # pak re-maximalizuj, aby vyplnila celý monitor (bez vlastního pruhu).
+            self._apply_anchor_workarea()
+            for hwnd, data in list(self.anchored_hwnds.items()):
+                if data.get("maximized"):
+                    try:
+                        User32.ShowWindow(hwnd, 3)  # SW_MAXIMIZE
+                    except Exception:
+                        pass
 
     def _apply_anchor_workarea(self):
         """Registruje AppBar okna pro každou ukotvenu stranu monitoru, aby
@@ -2459,6 +2496,13 @@ class WindowSwitcherApp:
             edge_extent = {}
 
             for hwnd_a, anc_data in self.anchored_hwnds.items():
+                # Maximalizovaná kotva nerezervuje pruh – pokrývá monitor sama
+                # a rezervace by ji jen zkrátila o vlastní okraj.
+                try:
+                    if User32.GetWindowLongW(hwnd_a, -16) & 0x01000000:  # WS_MAXIMIZE
+                        continue
+                except Exception:
+                    pass
                 ax1, ay1, ax2, ay2 = anc_data["rect"]
                 if ax2 <= mx1 or ax1 >= mx2 or ay2 <= my1 or ay1 >= my2:
                     continue
@@ -2496,7 +2540,9 @@ class WindowSwitcherApp:
         self.root.after(400, self._reassert_anchor_positions)
 
     def _reassert_anchor_positions(self):
-        """Vrátí každé ukotvené okno na uloženou pozici (po změně work area)."""
+        """Vrátí každé ukotvené okno na uloženou (domovskou) pozici po změně work
+        area. Maximalizované okno nechá být (maximalizaci povolujeme),
+        minimalizované řeší _maintain_anchored_windows."""
         WS_MAXIMIZE    = 0x01000000
         GWL_STYLE      = -16
         SWP_NOZORDER   = 0x0004
@@ -2506,7 +2552,9 @@ class WindowSwitcherApp:
             try:
                 style = User32.GetWindowLongW(hwnd_a, GWL_STYLE)
                 if style & WS_MAXIMIZE:
-                    User32.SetWindowLongW(hwnd_a, GWL_STYLE, style & ~WS_MAXIMIZE)
+                    continue  # maximalizaci povolujeme – nevracet na kotvu
+                if User32.IsIconic(hwnd_a):
+                    continue  # minimalizované obnoví _maintain_anchored_windows
                 User32.SetWindowPos(hwnd_a, None, ax1, ay1,
                                     ax2 - ax1, ay2 - ay1,
                                     SWP_NOZORDER | SWP_NOACTIVATE)
@@ -2773,11 +2821,21 @@ class WindowSwitcherApp:
             if _in_callback[0] or not hwnd or idObject != 0:
                 return
             if hwnd in self.anchored_hwnds:
-                # Update stored rect of the anchor itself when it moves
-                rect = RECT()
-                if User32.GetWindowRect(hwnd, ctypes.byref(rect)):
-                    if hwnd in self.anchored_hwnds:
-                        self.anchored_hwnds[hwnd]["rect"] = (rect.left, rect.top, rect.right, rect.bottom)
+                # Ukotvené okno uživatel pohnul / změnil velikost. Maximalizaci
+                # povolíme (necháme být), jinak ho hned vrátíme na domovskou
+                # (ukotvenou) pozici a velikost – „ukotvená poloha" je pevná.
+                style = User32.GetWindowLongW(hwnd, -16)  # GWL_STYLE
+                if not (style & 0x01000000):              # WS_MAXIMIZE
+                    home = self.anchored_hwnds.get(hwnd)
+                    if home:
+                        ax1, ay1, ax2, ay2 = home["rect"]
+                        _in_callback[0] = True
+                        try:
+                            User32.SetWindowPos(hwnd, None, ax1, ay1,
+                                                ax2 - ax1, ay2 - ay1,
+                                                SWP_NOZORDER_FLAG | SWP_NOACTIVATE_FLAG)
+                        finally:
+                            _in_callback[0] = False
                 return
             if not self.anchored_hwnds:
                 return
