@@ -239,6 +239,11 @@ odshora.
 okna ho nepřekryjí (rezervuje se odpovídající okraj pracovní plochy). Opakovaným příkazem se
 okno odkotví. Ukotvení přežije i pád aplikace – při dalším startu se neplatné kotvy uklidí.
 
+Kotvy se navíc **aktivně udržují**: na pozadí běží hlídač (každých ~1,5 s), který ukotvenému
+oknu obnoví příznak „vždy navrchu" a vrátí ho na rezervované místo, pokud ho něco odsune nebo
+překryje (typicky po **návratu z celoobrazovkové VDI/Citrix relace** nebo po změně rozlišení).
+Rezervovaný pruh work area tak nezůstane prázdný. Ruční přesun okna myší se respektuje.
+
 Rezervace okraje se automaticky uvolní, když:
 - ukotvené okno **zavřeš** (nezůstane po něm prázdný pruh);
 - u kotvy vázané na skupinu (`gg<x> kkk`) **opustíš nebo přepneš skupinu**. Kotva se ale jen
