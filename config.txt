@@ -30,9 +30,10 @@ hotkey_key f12
 
 # Chování při vzniku nového okna, pokud je aktivní skupina:
 #   never              - nové okno se ignoruje
-#   ask                - zobrazí dotaz; tlačítka: Ano / Vždy / Vždy do přepnutí /
-#                        Ne - zůstat (skip, ale zůstat ve skupině) /
-#                        Ne - opustit skupinu (skip + opustit skupinu)
+#   ask                - zobrazí dotaz; tlačítka: Ano / Ano dočasně / Vždy /
+#                        Vždy do přepnutí / Ne - zůstat (skip, zůstat ve skupině) /
+#                        Ne - opustit skupinu (skip + opustit skupinu) / Zavřít okno
+#                        "Ano dočasně" = okno je ve skupině jen dokud je aktivní
 #   always             - nové okno se vždy přidá bez ptaní
 new_window_action ask
 
@@ -42,19 +43,30 @@ hide_taskbar_icons true
 # Skrývat okna mimo aktivní skupinu i v přepínání Alt+Tab (true / false)
 hide_alttab_icons true
 
-# Automatické přidání nového okna do skupiny bez ptaní, pokud titulek odpovídá regexpu
-# (má přednost před new_window_action ask/always)
+# --- Automatická volba po vzniku nového okna (bez dotazu) ---
+# Pro každou volbu jedna položka = regulární výraz. Hledá se v řetězci
+# "<proces> <titulek>" (např. "chrome.exe Nova zprava - Gmail"), takže lze
+# mířit na název aplikace i titulek. Auto-pravidla mají přednost před
+# new_window_action ask/always.
+#
+# Vyhodnocují se v tomto pořadí (první shoda vyhrává):
+#   1) new_window_auto_yes       - Ano: přidat do skupiny natrvalo
+#   2) new_window_auto_yes_temp  - Ano dočasně: ve skupině jen dokud je aktivní
+#   3) new_window_auto_no        - Ne - zůstat: vynechat, zůstat ve skupině
+#   4) auto_close_windows        - Zavřít okno
+#   5) new_window_auto_no_leave  - Ne - opustit skupinu: vynechat + opustit
+
 # Příklad: new_window_auto_yes .*PL.SQL.*|.*Oracle.*
-# new_window_auto_yes 
+# new_window_auto_yes
 
-# Automatické vynechání nového okna (nebude přidáno ani dotázáno), skupina zůstane aktivní
+# Příklad: new_window_auto_yes_temp .*Kalkulačka.*|.*Poznámkový.*
+# new_window_auto_yes_temp
+
 # Příklad: new_window_auto_no .*Outlook.*|.*Teams.*
-# new_window_auto_no 
+# new_window_auto_no
 
-# Automatické vynechání nového okna + opustení skupiny, pokud titulek odpovídá regexpu
-# Příklad: new_window_auto_no_leave .*Outlook.*|.*Teams.*
-# new_window_auto_no_leave 
-
-# Automatické zavření nového okna (nevypíše dialog), pokud titulek odpovídá regexpu
 # Příklad: auto_close_windows .*Calculator.*|.*Notepad.*
-# auto_close_windows 
+# auto_close_windows
+
+# Příklad: new_window_auto_no_leave msedge.exe.*|.*Teams.*
+# new_window_auto_no_leave

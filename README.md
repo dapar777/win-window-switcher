@@ -144,17 +144,20 @@ za běhu načíst klávesou **Ctrl + R**.
 | `list_thumbnail_scale` | desetinné číslo | `5.0` | Měřítko malých náhledů (základ 48×30 px × měřítko). |
 | `window_height` | celé číslo (px) | `680` | Výška okna přepínače. |
 | `new_window_action` | `never`, `ask`, `always`, `leave` | `never` | Co se stane s nově vzniklým oknem, je-li aktivní skupina. |
-| `new_window_auto_yes` | regulární výraz | – | Okno s odpovídajícím titulkem se **automaticky přidá** do skupiny (bez dotazu). |
-| `new_window_auto_no` | regulární výraz | – | Okno se **vynechá**, skupina zůstane aktivní. |
-| `new_window_auto_no_leave` | regulární výraz | – | Okno se vynechá **a opustí se skupina**. |
-| `auto_close_windows` | regulární výraz | – | Nově vzniklé okno s odpovídajícím titulkem se **automaticky zavře**. |
+| `new_window_auto_yes` | regulární výraz | – | **Ano** – okno se automaticky přidá do skupiny (natrvalo). |
+| `new_window_auto_yes_temp` | regulární výraz | – | **Ano dočasně** – okno je ve skupině jen dokud je aktivní (neukládá se). |
+| `new_window_auto_no` | regulární výraz | – | **Ne - zůstat** – okno se vynechá, skupina zůstane aktivní. |
+| `auto_close_windows` | regulární výraz | – | **Zavřít** – nově vzniklé okno se automaticky zavře. |
+| `new_window_auto_no_leave` | regulární výraz | – | **Ne - opustit skupinu** – okno se vynechá a opustí se skupina. |
 | `hide_taskbar_icons` | `true` / `false` | `false` | Skrýt na hlavním panelu ikony oken **mimo** aktivní skupinu. |
 | `hide_alttab_icons` | `true` / `false` | `false` | Skrýt okna mimo aktivní skupinu i z přepínání **Alt+Tab**. |
 
-> Regulární výrazy v auto-pravidlech (`new_window_auto_*`, `auto_close_windows`) se
-> vyhodnocují **bez ohledu na velikost písmen** a více vzorů spojíte svislítkem `|`,
-> např. `new_window_auto_yes .*PL.SQL.*|.*Oracle.*`. Auto-pravidla mají **přednost** před
-> volbou `new_window_action`.
+> Auto-pravidla (`new_window_auto_*`, `auto_close_windows`) jsou regulární výrazy hledané
+> v řetězci **„proces titulek"** (např. `chrome.exe Nová zpráva – Gmail`), takže lze mířit
+> na název aplikace i titulek. Vyhodnocují se **bez ohledu na velikost písmen**, více vzorů
+> spojíte svislítkem `|`. Mají **přednost** před volbou `new_window_action` a vyhodnocují se
+> v pořadí: **Ano → Ano dočasně → Ne - zůstat → Zavřít → Ne - opustit skupinu** (první shoda
+> vyhraje).
 
 **Příklad `hotkey_*`:**
 ```text
@@ -268,13 +271,18 @@ Je-li aktivní nějaká skupina a objeví se nové okno, řídí se chování vo
 | Hodnota | Chování |
 |---------|---------|
 | `never` | Nové okno se ignoruje. |
-| `ask` | Zobrazí se dotaz s tlačítky:<br>**Ano** (přidat) · **Vždy** (přidávat bez ptaní) · **Vždy do přepnutí** (přidávat do změny skupiny) · **Ne – zůstat** (vynechat, zůstat ve skupině) · **Ne – opustit skupinu** (vynechat a opustit skupinu). |
+| `ask` | Zobrazí se dotaz s tlačítky:<br>**Ano** (přidat natrvalo) · **Ano dočasně** (ve skupině jen dokud je okno aktivní) · **Vždy** (přidávat bez ptaní) · **Vždy do přepnutí** (přidávat do změny skupiny) · **Ne – zůstat** (vynechat, zůstat ve skupině) · **Ne – opustit skupinu** (vynechat a opustit) · **Zavřít okno** (rovnou zavřít). |
 | `always` | Nové okno se vždy přidá bez ptaní. |
 | `leave` | Při novém okně se opustí skupina. |
 
-Auto-pravidla podle regulárního výrazu (`new_window_auto_yes`, `new_window_auto_no`,
-`new_window_auto_no_leave`, `auto_close_windows`) mají **přednost** před `new_window_action`
-a umožňují automaticky přidat, vynechat, opustit skupinu nebo dané okno rovnou zavřít.
+**Ano dočasně** přidá okno do skupiny jen do runtime (neuloží se do `groups.json`) a okno je
+členem skupiny **jen dokud je aktivní** – jakmile přepneš na jiné okno, ze skupiny vypadne
+(a při návratu na něj se zase vrátí). Při opuštění skupiny se dočasní členové zapomenou.
+
+Auto-pravidla podle regulárního výrazu (`new_window_auto_yes`, `new_window_auto_yes_temp`,
+`new_window_auto_no`, `auto_close_windows`, `new_window_auto_no_leave`) mají **přednost** před
+`new_window_action`. Hledají se v řetězci „proces titulek" a vyhodnocují se v pořadí
+**Ano → Ano dočasně → Ne - zůstat → Zavřít → Ne - opustit skupinu**.
 
 ---
 

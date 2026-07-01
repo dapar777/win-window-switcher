@@ -232,10 +232,13 @@ class WindowSwitcherApp:
         self._watch_in_progress = False       # re-entrancy guard (modální dialog pumpuje event loop)
         self.pending_new_windows = []  # New windows not yet in any group (for 'ask' mode)
         self.new_window_action = "never"  # Config: never | ask | always | leave
-        self.new_window_auto_yes      = None  # compiled regex: auto-add matching titles
-        self.new_window_auto_no       = None  # compiled regex: auto-skip matching titles (stay in group)
-        self.new_window_auto_no_leave = None  # compiled regex: auto-skip + leave group
-        self.auto_close_windows = None  # compiled regex: auto-close matching new windows
+        # Auto-pravidla pro nové okno – regexy se hledají v "proces titulek".
+        self.new_window_auto_yes      = None  # Ano: přidat do skupiny (natrvalo)
+        self.new_window_auto_yes_temp = None  # Ano dočasně: ve skupině jen dokud je aktivní
+        self.new_window_auto_no       = None  # Ne - zůstat: vynechat, zůstat ve skupině
+        self.new_window_auto_no_leave = None  # Ne - opustit skupinu: vynechat + opustit
+        self.auto_close_windows = None  # Zavřít: nové okno automaticky zavřít
+        self.temp_group_hwnds = {}  # hwnd -> group: dočasní členové (Ano dočasně)
         self.prev_active_hwnd = None
         self.prev_active_title = ""
         # Taskbar icon hiding via ITaskbarList COM
@@ -590,6 +593,14 @@ class WindowSwitcherApp:
                             val = line.split(None, 1)[1].lower()
                             if val in ("never", "ask", "always", "leave"):
                                 self.new_window_action = val
+                            continue
+
+                        if line.startswith("new_window_auto_yes_temp "):
+                            pattern = line.split(None, 1)[1].strip()
+                            try:
+                                self.new_window_auto_yes_temp = re.compile(pattern, re.IGNORECASE)
+                            except re.error:
+                                self.new_window_auto_yes_temp = None
                             continue
 
                         if line.startswith("new_window_auto_yes "):
@@ -1018,6 +1029,10 @@ class WindowSwitcherApp:
             stale = self.runtime_hwnd_to_groups[gname] - live_hwnds
             if stale:
                 self.runtime_hwnd_to_groups[gname] -= stale
+        # Zapomeň i dočasné členy (Ano dočasně), jejichž okno už neexistuje.
+        for thwnd in list(self.temp_group_hwnds.keys()):
+            if thwnd not in live_hwnds:
+                del self.temp_group_hwnds[thwnd]
 
     def on_hotkey_pressed(self):
         if self.is_visible:
@@ -2022,8 +2037,9 @@ class WindowSwitcherApp:
         return "break"
 
     def _ask_new_window_dialog(self, title, message):
-        """Vlastní dialog s tlačítky: Zavřít okno / Ano / Vždy / Vždy do přepnutí / Ne - zůstat / Ne - opustit skupinu.
-        Vrací: 'close' | 'yes' | 'always' | 'always_until_switch' | 'no' | 'no_leave'
+        """Vlastní dialog s tlačítky: Zavřít okno / Ano / Ano dočasně / Vždy /
+        Vždy do přepnutí / Ne - zůstat / Ne - opustit skupinu.
+        Vrací: 'close' | 'yes' | 'yes_temp' | 'always' | 'always_until_switch' | 'no' | 'no_leave'
         """
         result = ["no"]
         dlg = tk.Toplevel(self.root)
@@ -2043,32 +2059,35 @@ class WindowSwitcherApp:
 
         # Layout:
         #   Row 0: [Zavřít okno] (colspan 2)  ← šipkou nahoru z Ano
-        #   Row 1: [Ano] (colspan 2)
+        #   Row 1: [Ano] [Ano dočasně]
         #   Row 2: [Vždy] [Vždy do přepnutí]
         #   Row 3: [Ne - zůstat] [Ne - opustit skupinu]
         btn_zavrit = tk.Button(btn_frame, text="Zavřít okno",           width=18, command=lambda: pick("close"))
         btn_ano    = tk.Button(btn_frame, text="Ano",                    width=18, command=lambda: pick("yes"))
+        btn_anot   = tk.Button(btn_frame, text="Ano dočasně",            width=18, command=lambda: pick("yes_temp"))
         btn_vzdy   = tk.Button(btn_frame, text="Vždy",                   width=18, command=lambda: pick("always"))
         btn_vpre   = tk.Button(btn_frame, text="Vždy do přepnutí",       width=18, command=lambda: pick("always_until_switch"))
         btn_nz     = tk.Button(btn_frame, text="Ne - zůstat",             width=18, command=lambda: pick("no"))
         btn_nl     = tk.Button(btn_frame, text="Ne - opustit skupinu",    width=18, command=lambda: pick("no_leave"))
 
         btn_zavrit.grid(row=0, column=0, columnspan=2, padx=4, pady=2)
-        btn_ano.grid   (row=1, column=0, columnspan=2, padx=4, pady=2)
+        btn_ano.grid   (row=1, column=0,               padx=4, pady=2)
+        btn_anot.grid  (row=1, column=1,               padx=4, pady=2)
         btn_vzdy.grid  (row=2, column=0,               padx=4, pady=2)
         btn_vpre.grid  (row=2, column=1,               padx=4, pady=2)
         btn_nz.grid    (row=3, column=0,               padx=4, pady=2)
         btn_nl.grid    (row=3, column=1,               padx=4, pady=2)
 
-        btns = [btn_zavrit, btn_ano, btn_vzdy, btn_vpre, btn_nz, btn_nl]
-        positions = [(0, 0), (1, 0), (2, 0), (2, 1), (3, 0), (3, 1)]
+        btns = [btn_zavrit, btn_ano, btn_anot, btn_vzdy, btn_vpre, btn_nz, btn_nl]
+        positions = [(0, 0), (1, 0), (1, 1), (2, 0), (2, 1), (3, 0), (3, 1)]
 
         # Navigace šipkami mezi tlačítky
         nav = {
             (0, 0): {"Down": (1, 0)},
-            (1, 0): {"Up": (0, 0), "Down": (2, 0)},
+            (1, 0): {"Up": (0, 0), "Right": (1, 1), "Down": (2, 0)},
+            (1, 1): {"Up": (0, 0), "Left":  (1, 0), "Down": (2, 1)},
             (2, 0): {"Up": (1, 0), "Right": (2, 1), "Down": (3, 0)},
-            (2, 1): {"Up": (1, 0), "Left":  (2, 0), "Down": (3, 1)},
+            (2, 1): {"Up": (1, 1), "Left":  (2, 0), "Down": (3, 1)},
             (3, 0): {"Up": (2, 0), "Right": (3, 1)},
             (3, 1): {"Up": (2, 1), "Left":  (3, 0)},
         }
@@ -2125,22 +2144,28 @@ class WindowSwitcherApp:
                 for w in current_windows:
                     if w["hwnd"] in new_hwnds and not self.is_window_in_any_group(w):
                         title = w["title"]
-                        # Regex výjimky z configu mají prioritu před new_window_action
-                        if self.auto_close_windows and self.auto_close_windows.search(title):
+                        # Auto-pravidla z configu (regex na "proces titulek") mají
+                        # přednost před new_window_action. Pořadí vyhodnocení:
+                        # Ano → Ano dočasně → Ne zůstat → Zavřít → Ne opustit skupinu.
+                        subject = f"{w.get('process', '')} {title}"
+                        if self.new_window_auto_yes and self.new_window_auto_yes.search(subject):
+                            self._add_win_to_group(w, self.last_activated_group)
+                            self.activated_windows_hwnds.add(w["hwnd"])
+                            continue
+                        if self.new_window_auto_yes_temp and self.new_window_auto_yes_temp.search(subject):
+                            self._add_temp_win_to_group(w, self.last_activated_group)
+                            continue
+                        if self.new_window_auto_no and self.new_window_auto_no.search(subject):
+                            self.declined_new_windows.add(w["hwnd"])
+                            continue
+                        if self.auto_close_windows and self.auto_close_windows.search(subject):
                             WM_CLOSE = 0x0010
                             User32.PostMessageW(w["hwnd"], WM_CLOSE, 0, 0)
                             self.declined_new_windows.add(w["hwnd"])
                             continue
-                        if self.new_window_auto_no_leave and self.new_window_auto_no_leave.search(title):
+                        if self.new_window_auto_no_leave and self.new_window_auto_no_leave.search(subject):
                             self._leave_active_group()
                             break
-                        if self.new_window_auto_no and self.new_window_auto_no.search(title):
-                            self.declined_new_windows.add(w["hwnd"])
-                            continue
-                        if self.new_window_auto_yes and self.new_window_auto_yes.search(title):
-                            self._add_win_to_group(w, self.last_activated_group)
-                            self.activated_windows_hwnds.add(w["hwnd"])
-                            continue
                         if self.new_window_action in ("always", "always_until_switch"):
                             self._add_win_to_group(w, self.last_activated_group)
                             self.activated_windows_hwnds.add(w["hwnd"])
@@ -2159,6 +2184,8 @@ class WindowSwitcherApp:
                             if answer == "yes":
                                 self._add_win_to_group(w, self.last_activated_group)
                                 self.activated_windows_hwnds.add(w["hwnd"])
+                            elif answer == "yes_temp":  # ve skupině jen dokud je aktivní
+                                self._add_temp_win_to_group(w, self.last_activated_group)
                             elif answer == "always":
                                 self.new_window_action = "always"
                                 self._add_win_to_group(w, self.last_activated_group)
@@ -2261,6 +2288,51 @@ class WindowSwitcherApp:
         self.runtime_hwnd_to_groups[gname].add(win["hwnd"])
         self.save_groups()
         self._refresh_window_group_titles()
+
+    def _add_temp_win_to_group(self, win, gname):
+        """Přidá okno do skupiny DOČASNĚ ("Ano dočasně"). Neukládá se do
+        groups.json – je členem skupiny jen v runtime a jen dokud je aktivní
+        (viz _refresh_temp_group_membership). Při opuštění skupiny se zapomene."""
+        if not gname:
+            return
+        hwnd = win["hwnd"]
+        self.temp_group_hwnds[hwnd] = gname
+        self.runtime_hwnd_to_groups.setdefault(gname, set()).add(hwnd)
+        # Ať se na něj _watch_new_windows hned znovu neptá.
+        self.activated_windows_hwnds.add(hwnd)
+        if gname == self.last_activated_group:
+            self._update_taskbar_visibility(gname)
+
+    def _refresh_temp_group_membership(self, fg_hwnd):
+        """Dočasní členové (Ano dočasně) jsou ve skupině jen dokud jsou aktivní.
+        Aktivní dočasné okno drží v runtime cache skupiny, ostatní z ní vyřadí.
+        Přání (temp_group_hwnds) zůstává, takže se po opětovné aktivaci vrátí."""
+        if not self.temp_group_hwnds:
+            return
+        changed_group = None
+        for thwnd, tgroup in list(self.temp_group_hwnds.items()):
+            cache = self.runtime_hwnd_to_groups.setdefault(tgroup, set())
+            active = (thwnd == fg_hwnd and tgroup == self.last_activated_group)
+            if active and thwnd not in cache:
+                cache.add(thwnd)
+                changed_group = tgroup
+            elif not active and thwnd in cache:
+                cache.discard(thwnd)
+                changed_group = tgroup
+        if changed_group and changed_group == self.last_activated_group:
+            self._update_taskbar_visibility(self.last_activated_group)
+
+    def _clear_temp_group_windows(self, group_name=None):
+        """Zapomene dočasná členství (Ano dočasně) a vyřadí je z runtime cache.
+        group_name=None → všechna; jinak jen daná skupina."""
+        if not self.temp_group_hwnds:
+            return
+        for thwnd, tgroup in list(self.temp_group_hwnds.items()):
+            if group_name is not None and tgroup != group_name:
+                continue
+            if tgroup in self.runtime_hwnd_to_groups:
+                self.runtime_hwnd_to_groups[tgroup].discard(thwnd)
+            del self.temp_group_hwnds[thwnd]
 
     def _minimize_non_group_windows(self, group_name):
         """Minimalizuje všechna okna, která nepatří do zadané skupiny."""
@@ -2726,6 +2798,9 @@ class WindowSwitcherApp:
         owner = User32.GetWindow(hwnd, GW_OWNER)
         if owner:
             return  # owned window = dialog nebo child
+        # Dočasní členové (Ano dočasně): aktivní dočasné okno zůstane ve skupině,
+        # neaktivní se ze skupiny vyřadí. Provádíme dřív než rozhodnutí o odchodu.
+        self._refresh_temp_group_membership(hwnd)
         # Hledáme okno v kešovaném seznamu
         win_obj = next((w for w in self.all_windows if w.get("hwnd") == hwnd), None)
         if win_obj is None:
@@ -2819,6 +2894,7 @@ class WindowSwitcherApp:
         leaving = self.last_activated_group
         self.last_activated_group = ""
         self.last_group = ""  # aby switcher příště otevřel na všech oknech
+        self._clear_temp_group_windows()  # zapomeň dočasné členy
         self._restore_all_taskbar_icons()
         self._release_group_anchors(leaving)
         self.root.after(0, lambda: self._update_tray(""))
@@ -3049,6 +3125,7 @@ class WindowSwitcherApp:
                 self.new_window_action = "ask"
             if activated_group != self.last_activated_group:
                 self.declined_new_windows.clear()
+                self._clear_temp_group_windows(self.last_activated_group)
                 self._release_group_anchors(self.last_activated_group)
             self.last_activated_group = activated_group
             if activated_group:
@@ -3143,6 +3220,7 @@ class WindowSwitcherApp:
                     self.new_window_action = "ask"
                 if activated_group != self.last_activated_group:
                     self.declined_new_windows.clear()
+                    self._clear_temp_group_windows(self.last_activated_group)
                     self._release_group_anchors(self.last_activated_group)
                 self.last_activated_group = activated_group
                 if activated_group:
@@ -3203,6 +3281,7 @@ class WindowSwitcherApp:
                     self.new_window_action = "ask"
                 if activated_group != self.last_activated_group:
                     self.declined_new_windows.clear()
+                    self._clear_temp_group_windows(self.last_activated_group)
                     self._release_group_anchors(self.last_activated_group)
                 self.last_activated_group = activated_group
                 if activated_group:
