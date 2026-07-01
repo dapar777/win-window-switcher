@@ -2340,15 +2340,15 @@ class WindowSwitcherApp:
         „always on top". Vrací True, pokud něco uklidil."""
         if hwnd in self.anchored_hwnds:
             return False  # legitimně ukotvené – nesahat
-        if not User32.IsWindow(hwnd):
-            return False
-        if not User32.GetPropW(hwnd, "WinSwitcherAnchored"):
-            return False  # není to naše kotva
         try:
+            if not User32.IsWindow(hwnd):
+                return False
+            if not User32.GetPropW(hwnd, "WinSwitcherAnchored"):
+                return False  # není to naše kotva
             User32.SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE_FLAG)
             User32.RemovePropW(hwnd, "WinSwitcherAnchored")
         except Exception:
-            pass
+            return False
         return True
 
     def _anchor_watchdog(self):
