@@ -2331,6 +2331,26 @@ class WindowSwitcherApp:
             s.discard(hwnd)
         self._apply_anchor_workarea()  # Recompute with remaining anchors (or full restore)
 
+    def _clear_orphan_anchor(self, hwnd):
+        """Sesouladí stav OS se stavem aplikace: pokud okno už NENÍ v anchored_hwnds
+        (aplikace ho nepovažuje za ukotvené), ale stále nese naši značku kotvy a je
+        „vždy navrchu", jde o osiřelou kotvu. To může nastat, když okno vypadne
+        z anchored_hwnds bez shození TOPMOST (recyklace HWND, neshoda kontextu
+        skupiny, selhané SetWindowPos). Shodí TOPMOST, aby okno nezůstalo
+        „always on top". Vrací True, pokud něco uklidil."""
+        if hwnd in self.anchored_hwnds:
+            return False  # legitimně ukotvené – nesahat
+        if not User32.IsWindow(hwnd):
+            return False
+        if not User32.GetPropW(hwnd, "WinSwitcherAnchored"):
+            return False  # není to naše kotva
+        try:
+            User32.SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE_FLAG)
+            User32.RemovePropW(hwnd, "WinSwitcherAnchored")
+        except Exception:
+            pass
+        return True
+
     def _anchor_watchdog(self):
         """Periodicky kontroluje, zda ukotvená okna stále existují. Když uživatel
         ukotvené okno zavře (křížkem), uvolní jeho rezervaci work area (AppBar),
@@ -2354,6 +2374,15 @@ class WindowSwitcherApp:
                     self._apply_anchor_workarea()
                 # Aktivně udrž kotvy nahoře a na svém místě (full-screen VDI apod.).
                 self._maintain_anchored_windows()
+            # Reconcile: okna zapamatovaná pro NEAKTIVNÍ skupinu nesmí zůstat
+            # „always on top". Když vypadla z anchored_hwnds, ale TOPMOST jim
+            # zůstal, tady se osiřelá kotva uklidí (běží i s prázdným anchored_hwnds).
+            if self.group_anchor_intents:
+                for gname, hwnds in list(self.group_anchor_intents.items()):
+                    if gname == self.last_activated_group:
+                        continue  # aktivní skupina – její kotvy mají být nahoře
+                    for h in list(hwnds):
+                        self._clear_orphan_anchor(h)
         finally:
             self.root.after(1500, self._anchor_watchdog)
 
@@ -2672,6 +2701,12 @@ class WindowSwitcherApp:
             except Exception:
                 pass
             self.anchored_hwnds.pop(h, None)
+        # Pojistka proti osiřelé kotvě: okno mohlo vypadnout z anchored_hwnds bez
+        # shození TOPMOST (recyklace HWND, neshoda kontextu, selhané volání).
+        # Projdi přání této skupiny a u živých „kotev" bez záznamu shoď TOPMOST,
+        # aby okno po opuštění skupiny nezůstalo „always on top".
+        for h in list(self.group_anchor_intents.get(group_name, set())):
+            self._clear_orphan_anchor(h)
         if forget:
             self.group_anchor_intents.pop(group_name, None)
         if to_release:
