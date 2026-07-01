@@ -31,14 +31,15 @@ User32.GetWindow.argtypes = [ctypes.c_void_p, ctypes.c_uint]
 User32.ShowWindow.argtypes = [ctypes.c_void_p, ctypes.c_int]
 User32.SetForegroundWindow.argtypes = [ctypes.c_void_p]
 User32.BringWindowToTop.argtypes = [ctypes.c_void_p]
+# HWND vrací jako c_void_p (unsigned) – jinak by default c_int u handle s bitem 31
+# vracel záporné číslo a neshodovalo by se s hwnd z EnumWindows (též c_void_p).
+User32.GetForegroundWindow.restype = ctypes.c_void_p
 User32.RegisterHotKey.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_uint, ctypes.c_uint]
 User32.UnregisterHotKey.argtypes = [ctypes.c_void_p, ctypes.c_int]
 User32.IsWindow.argtypes = [ctypes.c_void_p]
 User32.IsWindow.restype = ctypes.c_bool
 User32.keybd_event.argtypes = [ctypes.c_byte, ctypes.c_byte, ctypes.c_ulong, ctypes.c_void_p]
 User32.IsIconic.argtypes = [ctypes.c_void_p]
-User32.GetAsyncKeyState.argtypes = [ctypes.c_int]
-User32.GetAsyncKeyState.restype = ctypes.c_short
 User32.GetAncestor.argtypes = [ctypes.c_void_p, ctypes.c_uint]
 User32.GetClassNameW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_int]
 User32.GetWindowThreadProcessId.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong)]
@@ -2362,20 +2363,22 @@ class WindowSwitcherApp:
           1) Znovu nastaví HWND_TOPMOST, pokud okno ztratilo příznak WS_EX_TOPMOST
              (typicky poté, co nad ně vyskočila full-screen VDI/Citrix relace).
           2) Vrátí okno na uloženou pozici, pokud ho něco odsunulo (např. změna
-             rozlišení při návratu z full-screenu) – ale jen když s ním uživatel
-             právě netáhá myší, aby přesun nebyl přerušovaný.
-        Uložený rect sleduje poslední záměr uživatele (aktualizuje ho anchor hook
-        při MOVESIZEEND), takže tímto nebojujeme s ručním přesunem okna."""
+             rozlišení při návratu z full-screenu).
+        Okno, které je právě v popředí, se přeskočí celé – uživatel s ním
+        pracuje (nebo ho zrovna dotáhl myší). Tím se vyhneme boji s ručním
+        přesunem: než uživatel přepne fokus jinam, anchor hook (MOVESIZEEND)
+        stihne uložený rect aktualizovat, takže žádný „drift" nevznikne."""
         if not self.anchored_hwnds:
             return
         WS_MAXIMIZE    = 0x01000000
         GWL_STYLE      = -16
         SWP_NOZORDER   = 0x0004
         SWP_NOACTIVATE = 0x0010
-        # Levé tlačítko myši dole = uživatel pravděpodobně táhne oknem → nezasahuj.
-        dragging = bool(User32.GetAsyncKeyState(0x01) & 0x8000)
+        fg = User32.GetForegroundWindow()
         for hwnd, data in list(self.anchored_hwnds.items()):
             try:
+                if hwnd == fg:
+                    continue  # aktivní okno uživatele – nesahej na něj
                 if not User32.IsWindow(hwnd) or User32.IsIconic(hwnd):
                     continue  # mrtvá řeší watchdog výše, minimalizovaná respektujeme
                 ax1, ay1, ax2, ay2 = data["rect"]
@@ -2387,16 +2390,15 @@ class WindowSwitcherApp:
                     User32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0,
                                         SWP_NOMOVE | SWP_NOSIZE_FLAG | SWP_NOACTIVATE)
                 # 2) Vrať okno na místo, pokud ho něco výrazně odsunulo.
-                if not dragging:
-                    cur = RECT()
-                    if User32.GetWindowRect(hwnd, ctypes.byref(cur)):
-                        if abs(cur.left - ax1) > 5 or abs(cur.top - ay1) > 5:
-                            style = User32.GetWindowLongW(hwnd, GWL_STYLE)
-                            if style & WS_MAXIMIZE:
-                                User32.SetWindowLongW(hwnd, GWL_STYLE, style & ~WS_MAXIMIZE)
-                            User32.SetWindowPos(hwnd, None, ax1, ay1,
-                                                ax2 - ax1, ay2 - ay1,
-                                                SWP_NOZORDER | SWP_NOACTIVATE)
+                cur = RECT()
+                if User32.GetWindowRect(hwnd, ctypes.byref(cur)):
+                    if abs(cur.left - ax1) > 5 or abs(cur.top - ay1) > 5:
+                        style = User32.GetWindowLongW(hwnd, GWL_STYLE)
+                        if style & WS_MAXIMIZE:
+                            User32.SetWindowLongW(hwnd, GWL_STYLE, style & ~WS_MAXIMIZE)
+                        User32.SetWindowPos(hwnd, None, ax1, ay1,
+                                            ax2 - ax1, ay2 - ay1,
+                                            SWP_NOZORDER | SWP_NOACTIVATE)
             except Exception:
                 pass
 
