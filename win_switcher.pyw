@@ -772,10 +772,19 @@ class WindowSwitcherApp:
                         break
         return loaded_any
 
+    def _is_global_anchor(self, hwnd):
+        """Je okno ukotvené globálně (kka)? Takové okno je členem všech skupin."""
+        d = self.anchored_hwnds.get(hwnd)
+        return bool(d and d.get("global_anchor"))
+
     def is_window_in_group(self, win, group_name):
+        # 0. Globálně ukotvené okno (kka) je členem VŠECH skupin – i budoucích.
+        if self._is_global_anchor(win.get("hwnd")):
+            return True
+
         # 1. Použij cachovaný WinSwitcherID z win dict (nastaven v get_open_windows, bez WinAPI volání)
         os_prop_id = win.get("win_switcher_id")
-        
+
         # 2. Default group '_' means "all windows not in any other named group"
         if group_name == "_":
             other_groups = [g for g in self.groups.keys() if g != "_"]
@@ -3119,7 +3128,8 @@ class WindowSwitcherApp:
 
             if activated_group and group_hwnds is not None:
                 for w in self.all_windows:
-                    if w["hwnd"] != hwnd and w["hwnd"] not in group_hwnds:
+                    if (w["hwnd"] != hwnd and w["hwnd"] not in group_hwnds
+                            and not self._is_global_anchor(w["hwnd"])):
                         User32.ShowWindow(w["hwnd"], 6)  # SW_MINIMIZE
 
             User32.SetForegroundWindow(hwnd)
@@ -3553,7 +3563,11 @@ class WindowSwitcherApp:
             hwnd = win.get("hwnd")
             if not hwnd:
                 continue
-            in_group = (hwnd in explicit_hwnds) if explicit_hwnds is not None else self.is_window_in_group(win, group_name)
+            # Globálně ukotvené okno (kka) je členem každé skupiny, i když není
+            # v explicit_hwnds (seznamu oken vybrané skupiny).
+            in_group = self._is_global_anchor(hwnd)
+            if not in_group:
+                in_group = (hwnd in explicit_hwnds) if explicit_hwnds is not None else self.is_window_in_group(win, group_name)
             if in_group:
                 if hwnd in self._taskbar_hidden_hwnds:
                     self._taskbar_add_tab(hwnd)

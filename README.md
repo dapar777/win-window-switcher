@@ -229,7 +229,7 @@ Tyto příkazy se píší přímo do vyhledávacího pole přepínače. `gg<x>` 
 | `gg<x> sv <název>` | **Uložit rozložení** (pozice oken) skupiny pod daným názvem. |
 | `gg<x> lv <název>` | **Načíst rozložení** skupiny a rozmístit okna podle něj. |
 | `kkk` | Ukotvit / odkotvit předchozí aktivní okno (bez vazby na skupinu). |
-| `kka` | Ukotvit / odkotvit předchozí aktivní okno **globálně**. |
+| `kka` | Ukotvit / odkotvit předchozí aktivní okno **globálně** – navrchu nad všemi skupinami a zároveň **členem každé skupiny** (i budoucí). |
 | `sv <název>` | Uložit **celkové** rozložení všech oken. |
 | `lv <název>` | Načíst **celkové** rozložení všech oken. |
 
@@ -260,6 +260,11 @@ Rezervace okraje se automaticky uvolní, když:
 
 Globální kotvy (`kka`) a kotvy bez skupiny (samotné `kkk`) zůstávají aktivní stále, dokud je
 ručně neodkotvíš nebo okno nezavřeš.
+
+**Globálně ukotvené okno (`kka`) je navíc bráno jako člen KAŽDÉ skupiny** – i těch, které
+teprve vzniknou. Přepnutí do jakékoli skupiny ho tedy neschová ani neminimalizuje a přepnutí
+na něj neopustí skupinu. Členství platí, dokud je okno globálně ukotvené; po odkotvení (`kka`)
+zase platí jen jeho běžné zařazení. (Nezapisuje se do `groups.json`.)
 
 ---
 
