@@ -2406,9 +2406,13 @@ class WindowSwitcherApp:
             self.group_anchor_intents.setdefault(group_ctx, set()).add(hwnd)
         self._apply_anchor_workarea()
         self._ensure_anchor_hook_running()
+        # Globální kotva (kka) se stává členem všech skupin → sjednoť taskbar.
+        if global_anchor and self.last_activated_group:
+            self._update_taskbar_visibility(self.last_activated_group)
 
     def _unanchor_window(self, hwnd):
         """Odkotvit okno: vrátí HWND_NOTOPMOST a obnoví work area."""
+        was_global = self._is_global_anchor(hwnd)
         if hwnd in self.anchored_hwnds:
             User32.SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE_FLAG)
             User32.RemovePropW(hwnd, "WinSwitcherAnchored")
@@ -2417,6 +2421,10 @@ class WindowSwitcherApp:
         for s in self.group_anchor_intents.values():
             s.discard(hwnd)
         self._apply_anchor_workarea()  # Recompute with remaining anchors (or full restore)
+        # Odkotvením globální kotvy okno přestává být členem všech skupin → sjednoť
+        # taskbar (jinak by mohla zůstat viditelná ikona okna mimo aktivní skupinu).
+        if was_global and self.last_activated_group:
+            self._update_taskbar_visibility(self.last_activated_group)
 
     def _clear_orphan_anchor(self, hwnd):
         """Sesouladí stav OS se stavem aplikace: pokud okno už NENÍ v anchored_hwnds
