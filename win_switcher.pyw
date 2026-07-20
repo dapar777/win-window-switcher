@@ -239,6 +239,8 @@ class WindowSwitcherApp:
         self.new_window_auto_no_leave = None  # Ne - opustit skupinu: vynechat + opustit
         self.auto_close_windows = None  # Zavřít: nové okno automaticky zavřít
         self.temp_group_hwnds = {}  # hwnd -> group: dočasní členové (Ano dočasně)
+        self.mmm_hwnd = None        # okno maximalizované přes vše (mmm), dokud je aktivní
+        self.mmm_restore = None     # (rect, was_maximized) pro obnovu mmm okna
         self.prev_active_hwnd = None
         self.prev_active_title = ""
         # Taskbar icon hiding via ITaskbarList COM
@@ -342,6 +344,18 @@ class WindowSwitcherApp:
             win_cy = (rect.top + rect.bottom) // 2
             for mx, my, mw, mh in monitors:
                 if mx <= win_cx < mx + mw and my <= win_cy < my + mh:
+                    return (mx, my, mw, mh)
+        return monitors[0]
+
+    def _monitor_rect_for(self, hwnd):
+        """Vrátí (x, y, w, h) CELÉHO monitoru (ne work area), na kterém je okno."""
+        monitors = self._get_monitors()
+        rect = RECT()
+        if hwnd and User32.GetWindowRect(hwnd, ctypes.byref(rect)):
+            cx = (rect.left + rect.right) // 2
+            cy = (rect.top + rect.bottom) // 2
+            for mx, my, mw, mh in monitors:
+                if mx <= cx < mx + mw and my <= cy < my + mh:
                     return (mx, my, mw, mh)
         return monitors[0]
 
@@ -1287,6 +1301,12 @@ class WindowSwitcherApp:
                 "group_ctx": None,
                 "global_anchor": True,
                 "title": f"{label} '{cur_title}' (globálně)",
+            })
+        elif search_text.lower() == "mmm":
+            cur_title = self.prev_active_title or "Neznámé"
+            self.filtered_items.append({
+                "type": "maximize_temp",
+                "title": f"🗖 [Maximalizovat přes vše] '{cur_title}' (dokud je aktivní)",
             })
         else:
             cleared_group = self.last_group
@@ -2346,6 +2366,80 @@ class WindowSwitcherApp:
                 self.runtime_hwnd_to_groups[tgroup].discard(thwnd)
             del self.temp_group_hwnds[thwnd]
 
+    # --------------- mmm: dočasná maximalizace přes vše ---------------
+
+    def _maximize_temp_window(self, hwnd):
+        """mmm: roztáhne okno přes CELÝ monitor a navrch (i přes ukotvená topmost
+        okna), a to jen dokud okno zůstane aktivní. Po ztrátě fokusu se obnoví
+        (viz _check_mmm_restore)."""
+        if not hwnd or not User32.IsWindow(hwnd):
+            return
+        SWP_FRAMECHANGED = 0x0020
+        if self.mmm_hwnd == hwnd:
+            # Už je mmm aktivní pro toto okno – jen znovu roztáhni (NEPŘEPISUJ
+            # mmm_restore, jinak by se ztratila původní velikost/pozice).
+            User32.SetForegroundWindow(hwnd)
+            mx, my, mw, mh = self._monitor_rect_for(hwnd)
+            User32.SetWindowPos(hwnd, HWND_TOPMOST, mx, my, mw, mh, SWP_FRAMECHANGED)
+            return
+        # Případné předchozí mmm okno (jiné) nejdřív obnov.
+        if self.mmm_hwnd and self.mmm_hwnd != hwnd:
+            self._restore_mmm_window()
+        if User32.IsIconic(hwnd):
+            User32.ShowWindow(hwnd, SW_RESTORE)
+        rect = RECT()
+        if not User32.GetWindowRect(hwnd, ctypes.byref(rect)):
+            return
+        # Ulož původní pozici/velikost pro obnovu (WS_MAXIMIZE neměníme, takže
+        # maximalizované okno se po obnově vrátí jako maximalizované).
+        self.mmm_restore = (rect.left, rect.top, rect.right, rect.bottom)
+        self.mmm_hwnd = hwnd
+        User32.SetForegroundWindow(hwnd)
+        mx, my, mw, mh = self._monitor_rect_for(hwnd)
+        User32.SetWindowPos(hwnd, HWND_TOPMOST, mx, my, mw, mh, SWP_FRAMECHANGED)
+
+    def _restore_mmm_window(self):
+        """Obnoví mmm okno na původní pozici a zruší mu „vždy navrchu"."""
+        hwnd = self.mmm_hwnd
+        rect = self.mmm_restore
+        self.mmm_hwnd = None
+        self.mmm_restore = None
+        if not hwnd or not rect or not User32.IsWindow(hwnd):
+            return
+        SWP_NOZORDER = 0x0004
+        SWP_NOACTIVATE = 0x0010
+        SWP_FRAMECHANGED = 0x0020
+        try:
+            User32.SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0,
+                                SWP_NOMOVE | SWP_NOSIZE_FLAG | SWP_NOACTIVATE)
+            l, t, r, b = rect
+            User32.SetWindowPos(hwnd, None, l, t, r - l, b - t,
+                                SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED)
+        except Exception:
+            pass
+
+    def _check_mmm_restore(self, hwnd):
+        """Spouští se po změně foreground okna. Když aktivní přestane být mmm
+        okno (a fokus dostane skutečné okno, ne systémový overlay), mmm okno
+        se obnoví."""
+        if not self.mmm_hwnd:
+            return
+        if User32.GetForegroundWindow() != hwnd:
+            return  # přechodný event
+        if hwnd == self.mmm_hwnd:
+            return  # mmm okno je stále aktivní – nech ho roztažené
+        # Stejné filtry jako u odchodu ze skupiny – ignoruj systémové overlaye
+        # (Alt+Tab, Task View, notifikace…), aby se mmm neobnovilo předčasně.
+        if User32.GetWindowTextLengthW(hwnd) == 0:
+            return
+        ex_style = User32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+        hidden_by_switcher = bool(User32.GetPropW(hwnd, "WinSwitcherExStyle"))
+        if (ex_style & WS_EX_TOOLWINDOW) and not hidden_by_switcher:
+            return
+        if User32.GetWindow(hwnd, GW_OWNER):
+            return
+        self._restore_mmm_window()
+
     def _minimize_non_group_windows(self, group_name):
         """Minimalizuje všechna okna, která nepatří do zadané skupiny."""
         SW_MINIMIZE = 6
@@ -2452,6 +2546,11 @@ class WindowSwitcherApp:
         aby po něm nezůstal prázdný pruh. Navíc aktivně obnovuje TOPMOST a pozici
         žijících kotev (viz _maintain_anchored_windows)."""
         try:
+            # Úklid mmm okna, pokud bylo mezitím zavřeno (jinak by zůstalo přání
+            # obnovy pro neexistující okno a foreground hook by běžel zbytečně).
+            if self.mmm_hwnd and not User32.IsWindow(self.mmm_hwnd):
+                self.mmm_hwnd = None
+                self.mmm_restore = None
             if self.anchored_hwnds:
                 dead = [h for h in list(self.anchored_hwnds.keys()) if not User32.IsWindow(h)]
                 for h in dead:
@@ -2752,7 +2851,8 @@ class WindowSwitcherApp:
         def _cb(hHook, event, hwnd, idObject, idChild, dwThread, dwTime):
             if not hwnd:
                 return
-            if not self.last_activated_group:
+            # Hook potřebujeme, když je aktivní skupina NEBO běží mmm (obnova okna).
+            if not self.last_activated_group and not self.mmm_hwnd:
                 return
             # Ignoruj okna našeho vlastního procesu (switcher, dialogy, tray)
             pid = ctypes.c_ulong(0)
@@ -2791,6 +2891,7 @@ class WindowSwitcherApp:
         try:
             while True:
                 hwnd = self._fg_queue.get_nowait()
+                self._check_mmm_restore(hwnd)
                 self._check_fg_for_group_exit(hwnd)
         except queue.Empty:
             pass
@@ -3384,6 +3485,11 @@ class WindowSwitcherApp:
                 self._unanchor_window(target_hwnd)
             else:
                 self._anchor_window(target_hwnd, item.get("group_ctx"), item.get("global_anchor", False))
+
+        elif item["type"] == "maximize_temp":
+            target_hwnd = self.prev_active_hwnd
+            if target_hwnd:
+                self._maximize_temp_window(target_hwnd)
 
     def listen_global_hotkey(self):
         HOTKEY_ID = 2411

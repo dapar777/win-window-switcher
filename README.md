@@ -230,6 +230,7 @@ Tyto příkazy se píší přímo do vyhledávacího pole přepínače. `gg<x>` 
 | `gg<x> lv <název>` | **Načíst rozložení** skupiny a rozmístit okna podle něj. |
 | `kkk` | Ukotvit / odkotvit předchozí aktivní okno (bez vazby na skupinu). |
 | `kka` | Ukotvit / odkotvit předchozí aktivní okno **globálně** – navrchu nad všemi skupinami a zároveň **členem každé skupiny** (i budoucí). |
+| `mmm` | **Maximalizovat přes vše** – roztáhne předchozí aktivní okno přes celý monitor a navrch, **i přes ukotvená okna**. Platí **jen dokud je okno aktivní**; po přepnutí jinam se vrátí na původní velikost. |
 | `sv <název>` | Uložit **celkové** rozložení všech oken. |
 | `lv <název>` | Načíst **celkové** rozložení všech oken. |
 
@@ -265,6 +266,11 @@ ručně neodkotvíš nebo okno nezavřeš.
 teprve vzniknou. Přepnutí do jakékoli skupiny ho tedy neschová ani neminimalizuje a přepnutí
 na něj neopustí skupinu. Členství platí, dokud je okno globálně ukotvené; po odkotvení (`kka`)
 zase platí jen jeho běžné zařazení. (Nezapisuje se do `groups.json`.)
+
+**Dočasná maximalizace přes vše (`mmm`):** roztáhne aktuální okno přes celý monitor a dá ho
+navrch **i přes ukotvená okna** (ignoruje jejich rezervovaný pruh). Platí jen dokud je okno
+aktivní – jakmile přepneš na jiné okno, vrátí se na původní velikost a ukotvená okna se zase
+objeví navrchu.
 
 ---
 
