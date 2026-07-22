@@ -241,6 +241,7 @@ class WindowSwitcherApp:
         self.temp_group_hwnds = {}  # hwnd -> group: dočasní členové (Ano dočasně)
         self.mmm_hwnd = None        # okno maximalizované přes vše (mmm), dokud je aktivní
         self.mmm_restore = None     # (rect, was_maximized) pro obnovu mmm okna
+        self.group_window_states = {}  # group -> {hwnd: was_minimized} při opuštění skupiny
         self.prev_active_hwnd = None
         self.prev_active_title = ""
         # Taskbar icon hiding via ITaskbarList COM
@@ -2447,6 +2448,37 @@ class WindowSwitcherApp:
             if not self.is_window_in_group(win, group_name):
                 User32.ShowWindow(win["hwnd"], SW_MINIMIZE)
 
+    def _snapshot_group_window_states(self, group_name):
+        """Zapamatuje si, která okna skupiny byla minimalizovaná – v okamžiku, kdy
+        skupinu opouštíme (než se okna mimo novou skupinu minimalizují). Při
+        návratu do skupiny se pak okna obnoví do stejného stavu."""
+        if not group_name:
+            return
+        states = {}
+        for win in self.all_windows:
+            if self.is_window_in_group(win, group_name):
+                try:
+                    states[win["hwnd"]] = bool(User32.IsIconic(win["hwnd"]))
+                except Exception:
+                    pass
+        self.group_window_states[group_name] = states
+
+    def _restore_group_window_states(self, group_name, group_hwnds, selected_hwnd):
+        """Po vstupu do skupiny obnoví její okna do stavu, v jakém byla, když jsme
+        skupinu naposledy opustili. Okna, která byla tehdy minimalizovaná, nechá
+        minimalizovaná; ostatní (a neznámá) obnoví – bez kradení fokusu."""
+        states = self.group_window_states.get(group_name)
+        for hwnd in group_hwnds:
+            if hwnd == selected_hwnd:
+                continue  # vybrané okno je už obnovené a v popředí
+            if not User32.IsWindow(hwnd):
+                continue
+            # Bylo naposledy minimalizované → nech ho tak.
+            if states is not None and states.get(hwnd, False):
+                continue
+            if User32.IsIconic(hwnd):
+                User32.ShowWindow(hwnd, SW_SHOWNOACTIVATE)
+
     def _remove_win_from_group(self, win, gname):
         """Odebere okno ze skupiny (groups dict + runtime cache)."""
         if gname not in self.groups:
@@ -3013,6 +3045,8 @@ class WindowSwitcherApp:
     def _leave_active_group(self):
         """Opustí aktivní skupinu: obnoví taskbar, tray, OSD a kotvy skupiny."""
         leaving = self.last_activated_group
+        # Zapamatuj stav oken skupiny, aby se po návratu obnovila stejně.
+        self._snapshot_group_window_states(leaving)
         self.last_activated_group = ""
         self.last_group = ""  # aby switcher příště otevřel na všech oknech
         self._clear_temp_group_windows()  # zapomeň dočasné členy
@@ -3235,11 +3269,20 @@ class WindowSwitcherApp:
                     if activated_group else None
                 )
 
+            group_changed = activated_group != self.last_activated_group
+            # Před minimalizací si zapamatuj stav skupiny, kterou opouštíme, aby se
+            # dala po návratu obnovit.
+            if group_changed and self.last_activated_group:
+                self._snapshot_group_window_states(self.last_activated_group)
+
             if activated_group and group_hwnds is not None:
                 for w in self.all_windows:
                     if (w["hwnd"] != hwnd and w["hwnd"] not in group_hwnds
                             and not self._is_global_anchor(w["hwnd"])):
                         User32.ShowWindow(w["hwnd"], 6)  # SW_MINIMIZE
+                # Po vstupu do (jiné) skupiny obnov její okna do posledního stavu.
+                if group_changed:
+                    self._restore_group_window_states(activated_group, group_hwnds, hwnd)
 
             User32.SetForegroundWindow(hwnd)
             User32.BringWindowToTop(hwnd)
@@ -3453,6 +3496,7 @@ class WindowSwitcherApp:
                 del self.groups[gname]
                 self.runtime_hwnd_to_groups.pop(gname, None)
                 self.views.pop(gname, None)
+                self.group_window_states.pop(gname, None)  # zapomeň uložený stav oken
                 self._clear_temp_group_windows(gname)  # zapomeň dočasné členy mazané skupiny
                 self._release_group_anchors(gname, forget=True)  # uvolni a zapomeň kotvy mazané skupiny
                 if self.last_group == gname:

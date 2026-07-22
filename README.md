@@ -195,6 +195,9 @@ velikost písmen.)*
 Skupina je pojmenovaná kolekce oken, kterou lze rychle aktivovat. Když je skupina aktivní:
 
 - na všech monitorech se zobrazí **OSD nápis** s názvem skupiny;
+- okna **mimo skupinu se minimalizují**, okna skupiny se obnoví **do stavu, v jakém byla, když
+  jsi skupinu naposledy opustil** (okna, která jsi tehdy nechal minimalizovaná, zůstanou
+  minimalizovaná);
 - volitelně se **skryjí ikony oken mimo skupinu** na hlavním panelu i v Alt+Tab
   (viz `hide_taskbar_icons`, `hide_alttab_icons`);
 - nová okna se zpracují podle `new_window_action` a auto-pravidel.
