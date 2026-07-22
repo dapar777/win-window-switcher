@@ -2469,15 +2469,18 @@ class WindowSwitcherApp:
         minimalizovaná; ostatní (a neznámá) obnoví – bez kradení fokusu."""
         states = self.group_window_states.get(group_name)
         for hwnd in group_hwnds:
-            if hwnd == selected_hwnd:
-                continue  # vybrané okno je už obnovené a v popředí
-            if not User32.IsWindow(hwnd):
-                continue
-            # Bylo naposledy minimalizované → nech ho tak.
-            if states is not None and states.get(hwnd, False):
-                continue
-            if User32.IsIconic(hwnd):
-                User32.ShowWindow(hwnd, SW_SHOWNOACTIVATE)
+            try:
+                if hwnd == selected_hwnd:
+                    continue  # vybrané okno je už obnovené a v popředí
+                if not User32.IsWindow(hwnd):
+                    continue
+                # Bylo naposledy minimalizované → nech ho tak.
+                if states is not None and states.get(hwnd, False):
+                    continue
+                if User32.IsIconic(hwnd):
+                    User32.ShowWindow(hwnd, SW_SHOWNOACTIVATE)
+            except Exception:
+                pass
 
     def _remove_win_from_group(self, win, gname):
         """Odebere okno ze skupiny (groups dict + runtime cache)."""
@@ -3385,6 +3388,7 @@ class WindowSwitcherApp:
                     self.new_window_action = "ask"
                 if activated_group != self.last_activated_group:
                     self.declined_new_windows.clear()
+                    self._snapshot_group_window_states(self.last_activated_group)
                     self._clear_temp_group_windows(self.last_activated_group)
                     self._release_group_anchors(self.last_activated_group)
                 self.last_activated_group = activated_group
@@ -3446,6 +3450,7 @@ class WindowSwitcherApp:
                     self.new_window_action = "ask"
                 if activated_group != self.last_activated_group:
                     self.declined_new_windows.clear()
+                    self._snapshot_group_window_states(self.last_activated_group)
                     self._clear_temp_group_windows(self.last_activated_group)
                     self._release_group_anchors(self.last_activated_group)
                 self.last_activated_group = activated_group
