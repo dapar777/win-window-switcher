@@ -209,8 +209,9 @@ souboru `groups.json`.
 > ⚠️ Ve výchozím stavu se **skupiny při každém startu vymažou**. Chcete-li je zachovat mezi
 > spuštěními, spusťte aplikaci s parametrem `--keep-groups` (viz níže).
 
-**Přepínání mezi skupinami:** šipkami **← / →** ve vyhledávacím poli procházíte abecedně
-seřazené skupiny i stav „všechna okna". Aktuální pozice se zobrazuje ve stavovém řádku.
+**Přepínání mezi skupinami:** šipkami **← / →** ve vyhledávacím poli procházíte skupiny
+**v pořadí, v jakém byly založeny** (ne podle abecedy) i stav „všechna okna". Aktuální pozice
+se zobrazuje ve stavovém řádku.
 
 ---
 

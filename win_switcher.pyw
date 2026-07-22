@@ -713,6 +713,11 @@ class WindowSwitcherApp:
             other_groups = {k: v for k, v in self.groups.items() if k != "_"}
             self.groups = {"_": default_items, **other_groups}
 
+    def _ordered_group_names(self):
+        """Názvy skupin v pořadí založení (pořadí vkládání do dictu = pořadí
+        v groups.json), NE podle abecedy. Skupina '_' je vždy první."""
+        return list(self.groups.keys())
+
     def get_window_rect(self, hwnd):
         rect = RECT()
         ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(rect))
@@ -1979,8 +1984,8 @@ class WindowSwitcherApp:
         return result[0]
 
     def navigate_group_left(self, event):
-        # Gather all groups, sort them alphabetically
-        all_group_names = sorted(list(self.groups.keys()))
+        # Skupiny v pořadí založení (ne podle abecedy).
+        all_group_names = self._ordered_group_names()
         current_val = self.entry_var.get().strip().split(maxsplit=1)
         current_g = ""
         if current_val:
@@ -2014,7 +2019,7 @@ class WindowSwitcherApp:
         self.entry_var.set(new_text)
         self.entry.icursor(tk.END)
         # Show navigation hint in status bar
-        all_names = sorted(list(self.groups.keys()))
+        all_names = self._ordered_group_names()
         if new_g:
             pos = all_names.index(new_g) + 1 if new_g in all_names else "?"
             self.status_label.config(text=f"← Skupina {pos}/{len(all_names)}: {new_g}  |  ← → pro přepínání skupin")
@@ -2023,8 +2028,8 @@ class WindowSwitcherApp:
         return "break"
 
     def navigate_group_right(self, event):
-        # Gather all groups, sort them alphabetically
-        all_group_names = sorted(list(self.groups.keys()))
+        # Skupiny v pořadí založení (ne podle abecedy).
+        all_group_names = self._ordered_group_names()
         current_val = self.entry_var.get().strip().split(maxsplit=1)
         current_g = ""
         if current_val:
@@ -2058,7 +2063,7 @@ class WindowSwitcherApp:
         self.entry_var.set(new_text)
         self.entry.icursor(tk.END)
         # Show navigation hint in status bar
-        all_names = sorted(list(self.groups.keys()))
+        all_names = self._ordered_group_names()
         if new_g:
             pos = all_names.index(new_g) + 1 if new_g in all_names else "?"
             self.status_label.config(text=f"Skupina {pos}/{len(all_names)}: {new_g} →  |  ← → pro přepínání skupin")
