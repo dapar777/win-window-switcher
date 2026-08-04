@@ -87,6 +87,45 @@ Shell32 = ctypes.windll.shell32
 Shell32.SHAppBarMessage.argtypes = [ctypes.c_uint, ctypes.c_void_p]
 Shell32.SHAppBarMessage.restype = ctypes.c_ulong
 
+# --- Per-monitor DPI awareness for AppBar geometry ---
+# Proces je záměrně DPI-unaware (kvůli Tkinter UI a náhledům), takže
+# GetWindowRect/EnumDisplayMonitors vrací virtualizované souřadnice. Rezervaci
+# work area přes SHAppBarMessage ale zpracovává DPI-aware shell, který rect
+# z unaware vlákna přeškáluje → na škálovaných (velkých) monitorech je
+# rezervovaný pruh posunutý a roztažený oproti skutečné poloze okna.
+# Řešení: souřadnice pro AppBar číst a registrovat ve FYZICKÝCH pixelech tím,
+# že dané vlákno dočasně přepneme na Per-Monitor-Aware-V2 (funguje i v jinak
+# unaware procesu). Zbytek aplikace zůstává ve virtualizované soustavě.
+DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = ctypes.c_void_p(-4)
+try:
+    User32.SetThreadDpiAwarenessContext.argtypes = [ctypes.c_void_p]
+    User32.SetThreadDpiAwarenessContext.restype = ctypes.c_void_p
+    _HAS_THREAD_DPI = True
+except AttributeError:
+    _HAS_THREAD_DPI = False  # < Windows 10 1607
+
+
+class _PhysicalDpi:
+    """Kontext manažer: na dobu bloku přepne volající vlákno do
+    Per-Monitor-Aware-V2, takže Win32 souřadnice jsou ve fyzických pixelech."""
+    def __enter__(self):
+        self._prev = None
+        if _HAS_THREAD_DPI:
+            try:
+                self._prev = User32.SetThreadDpiAwarenessContext(
+                    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)
+            except Exception:
+                self._prev = None
+        return self
+
+    def __exit__(self, *exc):
+        if _HAS_THREAD_DPI and self._prev:
+            try:
+                User32.SetThreadDpiAwarenessContext(self._prev)
+            except Exception:
+                pass
+        return False
+
 # AppBar constants
 ABM_NEW      = 0x00000000
 ABM_REMOVE   = 0x00000001
@@ -2725,6 +2764,8 @@ class WindowSwitcherApp:
         if not self.anchored_hwnds:
             return
 
+        # Monitory i polohy kotev čteme ve FYZICKÝCH pixelech (Per-Monitor-V2),
+        # aby rezervace přes SHAppBarMessage seděla i na škálovaných monitorech.
         MonitorEnumProc = ctypes.WINFUNCTYPE(
             ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p,
             ctypes.POINTER(RECT), ctypes.c_void_p
@@ -2734,7 +2775,13 @@ class WindowSwitcherApp:
             r = lpRect.contents
             monitor_rects.append((hMon, r.left, r.top, r.right, r.bottom))
             return True
-        User32.EnumDisplayMonitors(None, None, MonitorEnumProc(_mon_cb), 0)
+        anchor_phys_rects = {}   # hwnd -> fyzický rect (x1, y1, x2, y2)
+        with _PhysicalDpi():
+            User32.EnumDisplayMonitors(None, None, MonitorEnumProc(_mon_cb), 0)
+            for hwnd_a in list(self.anchored_hwnds.keys()):
+                pr = RECT()
+                if User32.GetWindowRect(hwnd_a, ctypes.byref(pr)):
+                    anchor_phys_rects[hwnd_a] = (pr.left, pr.top, pr.right, pr.bottom)
 
         for hMon, mx1, my1, mx2, my2 in monitor_rects:
             # For each edge, track the maximum intrusion of anchors on that edge.
@@ -2752,7 +2799,10 @@ class WindowSwitcherApp:
                         continue
                 except Exception:
                     pass
-                ax1, ay1, ax2, ay2 = anc_data["rect"]
+                phys = anchor_phys_rects.get(hwnd_a)
+                if not phys:
+                    continue  # rect se nepodařilo přečíst → tuto kotvu přeskoč
+                ax1, ay1, ax2, ay2 = phys
                 if ax2 <= mx1 or ax1 >= mx2 or ay2 <= my1 or ay1 >= my2:
                     continue
                 dist_left   = ax1 - mx1
@@ -2837,9 +2887,12 @@ class WindowSwitcherApp:
         abd.rc.bottom = appbar_rect[3]
         abd.lParam = 0
 
-        Shell32.SHAppBarMessage(ABM_NEW,      ctypes.byref(abd))
-        Shell32.SHAppBarMessage(ABM_QUERYPOS, ctypes.byref(abd))
-        Shell32.SHAppBarMessage(ABM_SETPOS,   ctypes.byref(abd))
+        # appbar_rect je ve fyzických pixelech → i registraci prováděj v
+        # Per-Monitor-V2 kontextu, jinak by shell rect z unaware vlákna přeškáloval.
+        with _PhysicalDpi():
+            Shell32.SHAppBarMessage(ABM_NEW,      ctypes.byref(abd))
+            Shell32.SHAppBarMessage(ABM_QUERYPOS, ctypes.byref(abd))
+            Shell32.SHAppBarMessage(ABM_SETPOS,   ctypes.byref(abd))
 
         self._appbar_windows[key] = (helper, ab_hwnd)
 
