@@ -252,6 +252,12 @@ oknu obnoví příznak „vždy navrchu" a vrátí ho na rezervované místo, po
 překryje (typicky po **návratu z celoobrazovkové VDI/Citrix relace** nebo po změně rozlišení).
 Rezervovaný pruh work area tak nezůstane prázdný.
 
+**Výjimka pro pomocná okna (Ditto apod.):** některá vyskakovací okna je potřeba vidět i nad
+ukotveným („vždy navrchu") oknem – typicky **výběr vkládané položky ve správci schránky
+Ditto**. Taková okna se automaticky zvednou nad kotvy. Které to jsou, se řídí volbami
+`anchor_overlay_classes` (třídy oken) a `anchor_overlay_processes` (názvy procesů) v
+`config.txt`; výchozí hodnoty pokrývají Ditto (`QPasteClass` / `Ditto.exe`).
+
 **Poloha ukotveného okna je pevná.** Okno **můžeš maximalizovat** (roztáhne se přes celý
 monitor – rezervace pruhu se po dobu maximalizace uvolní). Jakmile ho ale **minimalizuješ,
 zmenšíš nebo přesuneš**, vrátí se zpět do ukotvené polohy a velikosti. Chceš-li kotvu umístit

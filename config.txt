@@ -43,6 +43,15 @@ hide_taskbar_icons true
 # Skrývat okna mimo aktivní skupinu i v přepínání Alt+Tab (true / false)
 hide_alttab_icons true
 
+# --- Okna povolená NAD ukotvenými (always-on-top) okny ---
+# Ukotvené okno (kkk / kka) je "vždy navrchu" (TOPMOST). Některá pomocná okna
+# je ale potřeba vidět i nad ním – typicky výběr vkládané položky ve správci
+# schránky Ditto. Taková okna se automaticky zvednou nad kotvy.
+# Shoda podle TŘÍDY okna a/nebo NÁZVU PROCESU (case-insensitive), více hodnot
+# oddělených čárkou nebo mezerou. Výchozí hodnoty pokrývají Ditto.
+anchor_overlay_classes QPasteClass
+anchor_overlay_processes Ditto.exe
+
 # --- Automatická volba po vzniku nového okna (bez dotazu) ---
 # Pro každou volbu jedna položka = regulární výraz. Hledá se v řetězci
 # "<proces> <titulek>" (např. "chrome.exe Nova zprava - Gmail"), takže lze

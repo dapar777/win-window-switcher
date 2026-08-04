@@ -542,7 +542,12 @@ class WindowSwitcherApp:
         self.window_height = 680 # default height
         self.hotkey_modifier = 0x0008 # MOD_WIN (Win key)
         self.hotkey_vk = 0x09 # VK_TAB (Tab key)
-        
+        # Okna, která se smí zobrazit NAD ukotvenými (always-on-top) okny –
+        # typicky výběr vkládané položky ve správci schránky Ditto. Shoda podle
+        # třídy okna nebo názvu procesu (case-insensitive).
+        self.anchor_overlay_classes = {"qpasteclass"}   # Ditto quick-paste
+        self.anchor_overlay_processes = {"ditto.exe"}   # Ditto
+
         if not os.path.exists(CONFIG_FILE):
             try:
                 with open(CONFIG_FILE, "w", encoding="utf-8") as f:
@@ -698,7 +703,21 @@ class WindowSwitcherApp:
                             val = line.split(None, 1)[1].lower()
                             self.hide_alttab_icons = val in ("true", "1", "yes")
                             continue
-                            
+
+                        if line.startswith("anchor_overlay_classes "):
+                            vals = line.split(None, 1)[1]
+                            self.anchor_overlay_classes = {
+                                c.strip().lower() for c in re.split(r"[,\s]+", vals) if c.strip()
+                            }
+                            continue
+
+                        if line.startswith("anchor_overlay_processes "):
+                            vals = line.split(None, 1)[1]
+                            self.anchor_overlay_processes = {
+                                c.strip().lower() for c in re.split(r"[,\s]+", vals) if c.strip()
+                            }
+                            continue
+
                         parts = line.split(maxsplit=2)
                         if len(parts) == 3:
                             self.shortcuts.append({
@@ -2755,6 +2774,9 @@ class WindowSwitcherApp:
                                         SWP_NOZORDER | SWP_NOACTIVATE)
                 except Exception:
                     pass
+        # Overlay okna (Ditto) drž nad kotvami – po případném re-assertu TOPMOST
+        # kotvy by jinak Ditto zůstalo schované pod ní.
+        self._keep_overlay_above_anchors()
 
     def _apply_anchor_workarea(self):
         """Registruje AppBar okna pro každou ukotvenu stranu monitoru, aby
@@ -2926,6 +2948,60 @@ class WindowSwitcherApp:
             return
         self._anchor_hook_thread = threading.Thread(target=self._run_anchor_hook, daemon=True)
         self._anchor_hook_thread.start()
+
+    def _is_anchor_overlay_window(self, hwnd):
+        """True, pokud okno patří aplikaci, která smí být NAD ukotvenými okny
+        (např. výběrové okno Ditto). Shoda podle třídy okna nebo procesu."""
+        if not hwnd:
+            return False
+        if not (self.anchor_overlay_classes or self.anchor_overlay_processes):
+            return False
+        try:
+            if self.anchor_overlay_classes:
+                buf = ctypes.create_unicode_buffer(256)
+                if User32.GetClassNameW(hwnd, buf, 256) > 0:
+                    if buf.value.lower() in self.anchor_overlay_classes:
+                        return True
+            if self.anchor_overlay_processes:
+                pid = ctypes.c_ulong(0)
+                User32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+                h_proc = Kernel32.OpenProcess(0x1000, False, pid.value)  # QUERY_LIMITED_INFORMATION
+                if h_proc:
+                    try:
+                        path_buf = ctypes.create_unicode_buffer(1024)
+                        p_size = ctypes.c_ulong(1024)
+                        if Kernel32.QueryFullProcessImageNameW(h_proc, 0, path_buf, ctypes.byref(p_size)):
+                            if os.path.basename(path_buf.value).lower() in self.anchor_overlay_processes:
+                                return True
+                    finally:
+                        Kernel32.CloseHandle(h_proc)
+        except Exception:
+            pass
+        return False
+
+    def _promote_anchor_overlay(self, hwnd):
+        """Zvedne overlay okno (Ditto) do TOPMOST pásma, aby bylo nad kotvami.
+        Nekrade fokus (SWP_NOACTIVATE) ani okno nepřesouvá."""
+        try:
+            User32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+                                SWP_NOMOVE | SWP_NOSIZE_FLAG | SWP_NOACTIVATE_FLAG)
+        except Exception:
+            pass
+
+    def _keep_overlay_above_anchors(self):
+        """Fallback (běží v maintenance tiku): pokud je v popředí overlay okno
+        (Ditto), drž ho nad kotvami. Řeší i případ, kdy kotva mezitím znovu
+        získala TOPMOST a skočila nad Ditto."""
+        if not self.anchored_hwnds:
+            return
+        if not (self.anchor_overlay_classes or self.anchor_overlay_processes):
+            return
+        try:
+            fg = User32.GetForegroundWindow()
+            if fg and self._is_anchor_overlay_window(fg):
+                self._promote_anchor_overlay(fg)
+        except Exception:
+            pass
 
     def _run_foreground_hook(self):
         """Vlákno s WinEvent hookem pro EVENT_SYSTEM_FOREGROUND.
@@ -3119,6 +3195,7 @@ class WindowSwitcherApp:
     def _run_anchor_hook(self):
         """Vlákno s WinEvent hookem – přizpůsobuje okna přes kotvy."""
         import ctypes.wintypes
+        EVENT_SYSTEM_FOREGROUND = 0x0003
 
         WinEventProcType = ctypes.WINFUNCTYPE(
             None,
@@ -3129,6 +3206,15 @@ class WindowSwitcherApp:
 
         def _cb(hHook, event, hwnd, idObject, idChild, dwThread, dwTime):
             if _in_callback[0] or not hwnd or idObject != 0:
+                return
+            # Overlay okno (Ditto) naskočilo do popředí → hned ho zvedni nad kotvy.
+            if event == EVENT_SYSTEM_FOREGROUND:
+                if self.anchored_hwnds and self._is_anchor_overlay_window(hwnd):
+                    _in_callback[0] = True
+                    try:
+                        self._promote_anchor_overlay(hwnd)
+                    finally:
+                        _in_callback[0] = False
                 return
             if hwnd in self.anchored_hwnds:
                 # Ukotvené okno uživatel pohnul / změnil velikost. Maximalizaci
@@ -3199,6 +3285,11 @@ class WindowSwitcherApp:
             None, proc, 0, 0, WINEVENT_OUTOFCONTEXT,
         )
         self._anchor_hook_handle = hook
+        # Druhý hook: foreground změny – aby overlay okno (Ditto) šlo hned nad kotvy.
+        fg_hook = User32.SetWinEventHook(
+            EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND,
+            None, proc, 0, 0, WINEVENT_OUTOFCONTEXT,
+        )
 
         msg = ctypes.wintypes.MSG()
         while True:
@@ -3210,6 +3301,8 @@ class WindowSwitcherApp:
 
         if hook:
             User32.UnhookWinEvent(hook)
+        if fg_hook:
+            User32.UnhookWinEvent(fg_hook)
         self._anchor_hook_handle = None
 
     def on_item_activated(self, event=None):
