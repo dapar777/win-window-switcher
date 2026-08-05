@@ -3235,6 +3235,15 @@ class WindowSwitcherApp:
                 return
             if not self.anchored_hwnds:
                 return
+            # Overlay okno (Ditto) smí kotvu překrývat – neořezávej ho, jen ho
+            # udrž nad kotvami.
+            if self._is_anchor_overlay_window(hwnd):
+                _in_callback[0] = True
+                try:
+                    self._promote_anchor_overlay(hwnd)
+                finally:
+                    _in_callback[0] = False
+                return
             moved = RECT()
             if not User32.GetWindowRect(hwnd, ctypes.byref(moved)):
                 return
