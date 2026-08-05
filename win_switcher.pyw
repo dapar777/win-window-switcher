@@ -2980,26 +2980,49 @@ class WindowSwitcherApp:
         return False
 
     def _promote_anchor_overlay(self, hwnd):
-        """Zvedne overlay okno (Ditto) do TOPMOST pásma, aby bylo nad kotvami.
-        Nekrade fokus (SWP_NOACTIVATE) ani okno nepřesouvá."""
+        """Zajistí, že overlay okno (Ditto) je nad kotvami.
+        1) overlay dá do TOPMOST pásma; 2) každou kotvu EXPLICITNĚ zasune HNED
+        POD overlay v z-order. Krok 2 je nutný, protože SetWindowPos(HWND_TOPMOST)
+        na okno, které už topmost JE, ho nad kotvu nepřeřadí. Nekrade fokus."""
+        flags = SWP_NOMOVE | SWP_NOSIZE_FLAG | SWP_NOACTIVATE_FLAG
         try:
-            User32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0,
-                                SWP_NOMOVE | SWP_NOSIZE_FLAG | SWP_NOACTIVATE_FLAG)
+            User32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, flags)
         except Exception:
             pass
+        # Kotvy zasuň pod overlay (hWndInsertAfter = overlay). Kotva zůstává
+        # topmost, ale v z-order pod Dittem.
+        for anc in list(self.anchored_hwnds.keys()):
+            if anc == hwnd:
+                continue
+            try:
+                if User32.IsWindow(anc):
+                    User32.SetWindowPos(anc, hwnd, 0, 0, 0, 0, flags)
+            except Exception:
+                pass
 
     def _keep_overlay_above_anchors(self):
-        """Fallback (běží v maintenance tiku): pokud je v popředí overlay okno
-        (Ditto), drž ho nad kotvami. Řeší i případ, kdy kotva mezitím znovu
-        získala TOPMOST a skočila nad Ditto."""
+        """Fallback (běží v maintenance tiku): najde VŠECHNA viditelná overlay
+        okna (Ditto) – i ta, která nejsou v popředí (Ditto ukazuje výběr, aniž
+        by nutně kradlo fokus) – a drží je nad kotvami. Řeší i případ, kdy kotva
+        mezitím znovu získala TOPMOST a skočila nad Ditto."""
         if not self.anchored_hwnds:
             return
         if not (self.anchor_overlay_classes or self.anchor_overlay_processes):
             return
+        matches = []
+
+        def _cb(hwnd, lparam):
+            try:
+                if User32.IsWindowVisible(hwnd) and self._is_anchor_overlay_window(hwnd):
+                    matches.append(hwnd)
+            except Exception:
+                pass
+            return True
+
         try:
-            fg = User32.GetForegroundWindow()
-            if fg and self._is_anchor_overlay_window(fg):
-                self._promote_anchor_overlay(fg)
+            User32.EnumWindows(WNDENUMPROC(_cb), 0)
+            for h in matches:
+                self._promote_anchor_overlay(h)
         except Exception:
             pass
 

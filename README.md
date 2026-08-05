@@ -258,6 +258,10 @@ Ditto**. Taková okna se automaticky zvednou nad kotvy. Které to jsou, se říd
 `anchor_overlay_classes` (třídy oken) a `anchor_overlay_processes` (názvy procesů) v
 `config.txt`; výchozí hodnoty pokrývají Ditto (`QPasteClass` / `Ditto.exe`).
 
+Pokud by se okno nad kotvu nezvedlo (jiná verze/varianta programu má jinou třídu nebo
+proces), spusť s otevřeným výběrovým oknem `python ditto_probe.py` – vypíše třídu, proces
+a titulek všech viditelných oken, podle čehož upravíš výše uvedené volby.
+
 **Poloha ukotveného okna je pevná.** Okno **můžeš maximalizovat** (roztáhne se přes celý
 monitor – rezervace pruhu se po dobu maximalizace uvolní). Jakmile ho ale **minimalizuješ,
 zmenšíš nebo přesuneš**, vrátí se zpět do ukotvené polohy a velikosti. Chceš-li kotvu umístit
