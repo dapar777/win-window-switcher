@@ -1410,7 +1410,7 @@ class WindowSwitcherApp:
                 "type": "maximize_temp",
                 "title": f"🗖 [Maximalizovat přes vše] '{cur_title}' (dokud je aktivní)",
             })
-        elif search_text.lower() == "ppp":
+        elif search_text.lower() in ("ppp", "qqq"):  # qqq = alias
             cur_hwnd = self.prev_active_hwnd
             cur_title = self.prev_active_title or "Neznámé"
             is_promoted = cur_hwnd and cur_hwnd == self.ppp_hwnd

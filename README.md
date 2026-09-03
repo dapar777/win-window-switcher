@@ -241,7 +241,7 @@ Tyto příkazy se píší přímo do vyhledávacího pole přepínače. `gg<x>` 
 | `kkk` | Ukotvit / odkotvit předchozí aktivní okno (bez vazby na skupinu). |
 | `kka` | Ukotvit / odkotvit předchozí aktivní okno **globálně** – navrchu nad všemi skupinami a zároveň **členem každé skupiny** (i budoucí). |
 | `mmm` | **Maximalizovat přes vše** – roztáhne předchozí aktivní okno přes celý monitor a navrch, **i přes ukotvená okna**. Platí **jen dokud je okno aktivní**; po přepnutí jinam se vrátí na původní velikost. |
-| `ppp` | **Vyzdvihnout nad kotvy** – vyzdvihne předchozí aktivní okno **nad ukotvená okna**, ale **nemění jeho velikost ani pozici** (na rozdíl od `mmm`). Platí **jen dokud je okno aktivní**; po přepnutí jinam se vrátí zpět pod kotvy. Opakované `ppp` na témže okně vyzdvižení zruší. Lze nastavit i **přímou klávesovou zkratku** (`ppp_hotkey_*`) a spouštět bez otevírání přepínače. |
+| `ppp` / `qqq` | **Vyzdvihnout nad kotvy** – vyzdvihne předchozí aktivní okno **nad ukotvená okna**, ale **nemění jeho velikost ani pozici** (na rozdíl od `mmm`). Platí **jen dokud je okno aktivní**; po přepnutí jinam se vrátí zpět pod kotvy. Opakované `ppp` na témže okně vyzdvižení zruší. Lze nastavit i **přímou klávesovou zkratku** (`ppp_hotkey_*`) a spouštět bez otevírání přepínače. |
 | `sv <název>` | Uložit **celkové** rozložení všech oken. |
 | `lv <název>` | Načíst **celkové** rozložení všech oken. |
 
