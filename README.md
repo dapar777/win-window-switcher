@@ -241,7 +241,7 @@ Tyto příkazy se píší přímo do vyhledávacího pole přepínače. `gg<x>` 
 | `kkk` | Ukotvit / odkotvit předchozí aktivní okno (bez vazby na skupinu). |
 | `kka` | Ukotvit / odkotvit předchozí aktivní okno **globálně** – navrchu nad všemi skupinami a zároveň **členem každé skupiny** (i budoucí). |
 | `mmm` | **Maximalizovat přes vše** – roztáhne předchozí aktivní okno přes celý monitor a navrch, **i přes ukotvená okna**. Platí **jen dokud je okno aktivní**; po přepnutí jinam se vrátí na původní velikost. |
-| `ppp` / `qqq` | **Vyzdvihnout nad kotvy** – vyzdvihne předchozí aktivní okno **nad ukotvená okna**, ale **nemění jeho velikost ani pozici** (na rozdíl od `mmm`). Platí **jen dokud je okno aktivní**; po přepnutí jinam se vrátí zpět pod kotvy. Opakované `ppp` na témže okně vyzdvižení zruší. Lze nastavit i **přímou klávesovou zkratku** (`ppp_hotkey_*`) a spouštět bez otevírání přepínače. |
+| `ppp` / `qqq` | **Vyzdvihnout nad kotvy** – vyzdvihne předchozí aktivní okno **nad ukotvená okna**. Běžnému oknu **nemění velikost ani pozici**; **maximalizované** okno navíc roztáhne i přes pruh rezervovaný kotvami (ne přes hlavní panel – tím se liší od `mmm`). Platí **jen dokud je okno aktivní**; po přepnutí jinam se vrátí zpět pod kotvy. Opakované `ppp` na témže okně vyzdvižení zruší. Lze nastavit i **přímou klávesovou zkratku** (`ppp_hotkey_*`) a spouštět bez otevírání přepínače. |
 | `sv <název>` | Uložit **celkové** rozložení všech oken. |
 | `lv <název>` | Načíst **celkové** rozložení všech oken. |
 
@@ -293,10 +293,16 @@ navrch **i přes ukotvená okna** (ignoruje jejich rezervovaný pruh). Platí je
 aktivní – jakmile přepneš na jiné okno, vrátí se na původní velikost a ukotvená okna se zase
 objeví navrchu.
 
-**Dočasné vyzdvižení nad kotvy (`ppp`):** dá aktuální okno navrch **i přes ukotvená okna**, ale
-narozdíl od `mmm` mu **nemění velikost ani pozici** – okno zůstane přesně tam a takové, jaké je,
-jen se přestane schovávat pod kotvami. Platí jen dokud je okno aktivní; jakmile přepneš na jiné
-okno, vrátí se zpět pod kotvy. Opakované `ppp` na témže okně vyzdvižení rovnou zruší.
+**Dočasné vyzdvižení nad kotvy (`ppp` / `qqq`):** dá aktuální okno navrch **i přes ukotvená okna** –
+okno se chová, jako by kotvy neexistovaly. Platí jen dokud je okno aktivní; jakmile přepneš na
+jiné okno, vrátí se zpět pod kotvy. Opakované `ppp` na témže okně vyzdvižení rovnou zruší.
+
+- **Běžné okno** si drží velikost i pozici – jen se přestane schovávat pod kotvami.
+- **Maximalizované okno** (nebo okno roztažené přesně přes pracovní plochu) by se s kotvou vůbec
+  nepřekrývalo – kotva si rezervuje pruh obrazovky, do kterého maximalizace nesahá – a samotné
+  přeřazení nad ni by tedy nebylo vidět. Takové okno se proto navíc **dočasně roztáhne i přes
+  pruh kotev** (hlavní panel zůstane volný – tím se liší od `mmm`, které bere celý monitor).
+  Po ztrátě fokusu se vrátí zpět jako maximalizované do pracovní plochy.
 
 Okno vyzdvižené přes `ppp` se drží nahoře i proti tomu, že si kotvy svoje „vždy navrchu"
 pravidelně obnovují. `ppp` na okně, které už ukotvené je (`kkk` / `kka`), ho jen dočasně

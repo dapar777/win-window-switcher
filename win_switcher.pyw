@@ -82,6 +82,8 @@ User32.SystemParametersInfoW.argtypes = [ctypes.c_uint, ctypes.c_uint, ctypes.c_
 User32.SystemParametersInfoW.restype = ctypes.c_bool
 User32.GetMonitorInfoW.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
 User32.GetMonitorInfoW.restype = ctypes.c_bool
+User32.MonitorFromWindow.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+User32.MonitorFromWindow.restype = ctypes.c_void_p
 
 Shell32 = ctypes.windll.shell32
 Shell32.SHAppBarMessage.argtypes = [ctypes.c_uint, ctypes.c_void_p]
@@ -323,6 +325,8 @@ class WindowSwitcherApp:
         self.mmm_restore = None     # (rect, was_maximized) pro obnovu mmm okna
         self.ppp_hwnd = None        # okno vyzdvižené nad kotvy (ppp), dokud je aktivní
         self.ppp_was_topmost = False  # mělo ppp okno TOPMOST už předtím? (pak ho neshazuj)
+        self.ppp_restore_rect = None  # původní rect, když ppp okno roztáhlo přes pruh kotev
+        self.ppp_was_maximized = False  # bylo roztažené ppp okno maximalizované? (obnova stylu)
         self.group_window_states = {}  # group -> {hwnd: was_minimized} při opuštění skupiny
         self.prev_active_hwnd = None
         self.prev_active_title = ""
@@ -2490,8 +2494,7 @@ class WindowSwitcherApp:
             # Už je mmm aktivní pro toto okno – jen znovu roztáhni (NEPŘEPISUJ
             # mmm_restore, jinak by se ztratila původní velikost/pozice).
             User32.SetForegroundWindow(hwnd)
-            mx, my, mw, mh = self._monitor_rect_for(hwnd)
-            User32.SetWindowPos(hwnd, HWND_TOPMOST, mx, my, mw, mh, SWP_FRAMECHANGED)
+            self._stretch_window(hwnd, self._monitor_rect_for(hwnd), insert_after=HWND_TOPMOST)
             return
         # Případné předchozí mmm okno (jiné) nejdřív obnov.
         if self.mmm_hwnd and self.mmm_hwnd != hwnd:
@@ -2504,31 +2507,27 @@ class WindowSwitcherApp:
         rect = RECT()
         if not User32.GetWindowRect(hwnd, ctypes.byref(rect)):
             return
-        # Ulož původní pozici/velikost pro obnovu (WS_MAXIMIZE neměníme, takže
-        # maximalizované okno se po obnově vrátí jako maximalizované).
-        self.mmm_restore = (rect.left, rect.top, rect.right, rect.bottom)
+        # Ulož původní pozici/velikost pro obnovu. Maximalizované okno se musí
+        # roztahovat přes _stretch_window (SetWindowPos na něm Windows ignoruje);
+        # zapamatujeme si, že bylo maximalizované, a při obnově mu to vrátíme.
         self.mmm_hwnd = hwnd
         User32.SetForegroundWindow(hwnd)
-        mx, my, mw, mh = self._monitor_rect_for(hwnd)
-        User32.SetWindowPos(hwnd, HWND_TOPMOST, mx, my, mw, mh, SWP_FRAMECHANGED)
+        was_max = self._stretch_window(hwnd, self._monitor_rect_for(hwnd), insert_after=HWND_TOPMOST)
+        self.mmm_restore = ((rect.left, rect.top, rect.right, rect.bottom), was_max)
 
     def _restore_mmm_window(self):
         """Obnoví mmm okno na původní pozici a zruší mu „vždy navrchu"."""
         hwnd = self.mmm_hwnd
-        rect = self.mmm_restore
+        restore = self.mmm_restore
         self.mmm_hwnd = None
         self.mmm_restore = None
-        if not hwnd or not rect or not User32.IsWindow(hwnd):
+        if not hwnd or not restore or not User32.IsWindow(hwnd):
             return
-        SWP_NOZORDER = 0x0004
-        SWP_NOACTIVATE = 0x0010
-        SWP_FRAMECHANGED = 0x0020
+        rect, was_max = restore
         try:
             User32.SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0,
-                                SWP_NOMOVE | SWP_NOSIZE_FLAG | SWP_NOACTIVATE)
-            l, t, r, b = rect
-            User32.SetWindowPos(hwnd, None, l, t, r - l, b - t,
-                                SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED)
+                                SWP_NOMOVE | SWP_NOSIZE_FLAG | SWP_NOACTIVATE_FLAG)
+            self._unstretch_window(hwnd, rect, was_max)
         except Exception:
             pass
 
@@ -2588,8 +2587,112 @@ class WindowSwitcherApp:
         ex_style = User32.GetWindowLongW(hwnd, GWL_EXSTYLE)
         self.ppp_was_topmost = bool(ex_style & WS_EX_TOPMOST) or hwnd in self.anchored_hwnds
         self.ppp_hwnd = hwnd
+        # Maximalizované okno (nebo okno roztažené přesně přes pracovní plochu)
+        # se s kotvou vůbec NEPŘEKRÝVÁ – kotva si přes AppBar rezervuje pruh,
+        # do kterého maximalizace nesahá. Pouhé přeřazení nad kotvu by tedy
+        # nebylo vidět. Takové okno proto navíc DOČASNĚ roztáhneme i přes pruh
+        # kotev (ne přes hlavní panel – tím se liší od mmm); po skončení ppp
+        # se vrátí na původní rect (viz _restore_ppp_window).
+        self.ppp_restore_rect = None
+        if self.anchored_hwnds and self._covers_work_area(hwnd):
+            cur = RECT()
+            target = self._rect_without_anchors(hwnd)
+            if target and User32.GetWindowRect(hwnd, ctypes.byref(cur)):
+                self.ppp_restore_rect = (cur.left, cur.top, cur.right, cur.bottom)
+                self.ppp_was_maximized = self._stretch_window(hwnd, target)
         User32.SetForegroundWindow(hwnd)
         self._keep_ppp_above_anchors()
+
+    def _stretch_window(self, hwnd, target, insert_after=None, extra_flags=0):
+        """Roztáhne okno na target (x, y, w, h). Maximalizované okno drží Windows
+        v pracovní ploše a SetWindowPos na něm TIŠE IGNORUJE (vrací True, rect se
+        nezmění) – proto se mu nejdřív shodí styl WS_MAXIMIZE (stejný postup jako
+        u minimalizované kotvy ve watchdogu; „obnovená" pozice okna zůstává).
+        Vrací True, pokud okno bylo maximalizované – pro _unstretch_window."""
+        GWL_STYLE = -16
+        WS_MAXIMIZE = 0x01000000
+        st = User32.GetWindowLongW(hwnd, GWL_STYLE)
+        was_max = bool(st & WS_MAXIMIZE)
+        if was_max:
+            User32.SetWindowLongW(hwnd, GWL_STYLE, st & ~WS_MAXIMIZE)
+        x, y, w, h = target
+        flags = 0x0020 | extra_flags  # FRAMECHANGED
+        if insert_after is None:
+            flags |= SWP_NOZORDER_FLAG
+        User32.SetWindowPos(hwnd, insert_after, x, y, w, h, flags)
+        return was_max
+
+    def _unstretch_window(self, hwnd, rect, was_max):
+        """Vrátí okno na původní rect (l, t, r, b); bylo-li maximalizované, vrátí
+        mu i WS_MAXIMIZE, takže zůstane maximalizované. Nekrade fokus."""
+        GWL_STYLE = -16
+        WS_MAXIMIZE = 0x01000000
+        if was_max:
+            st = User32.GetWindowLongW(hwnd, GWL_STYLE)
+            User32.SetWindowLongW(hwnd, GWL_STYLE, st | WS_MAXIMIZE)
+        l, t, r, b = rect
+        User32.SetWindowPos(hwnd, None, l, t, r - l, b - t,
+                            SWP_NOZORDER_FLAG | SWP_NOACTIVATE_FLAG | 0x0020)
+
+    def _work_area_for(self, hwnd):
+        """Vrátí (x, y, w, h) PRACOVNÍ plochy (rcWork) monitoru, na kterém je
+        okno – tj. monitor bez hlavního panelu a bez pruhů rezervovaných kotvami."""
+        class MONITORINFO(ctypes.Structure):
+            _fields_ = [("cbSize", ctypes.c_ulong), ("rcMonitor", RECT),
+                        ("rcWork", RECT), ("dwFlags", ctypes.c_ulong)]
+        try:
+            hmon = User32.MonitorFromWindow(hwnd, 2)  # MONITOR_DEFAULTTONEAREST
+            mi = MONITORINFO()
+            mi.cbSize = ctypes.sizeof(MONITORINFO)
+            if hmon and User32.GetMonitorInfoW(hmon, ctypes.byref(mi)):
+                r = mi.rcWork
+                return (r.left, r.top, r.right - r.left, r.bottom - r.top)
+        except Exception:
+            pass
+        return self._monitor_rect_for(hwnd)
+
+    def _covers_work_area(self, hwnd):
+        """True, když je okno maximalizované, nebo roztažené (s tolerancí) přesně
+        přes pracovní plochu svého monitoru – tedy vyplňuje vše KROMĚ pruhu kotev."""
+        GWL_STYLE = -16
+        WS_MAXIMIZE = 0x01000000
+        try:
+            if User32.GetWindowLongW(hwnd, GWL_STYLE) & WS_MAXIMIZE:
+                return True
+            r = RECT()
+            if not User32.GetWindowRect(hwnd, ctypes.byref(r)):
+                return False
+            wx, wy, ww, wh = self._work_area_for(hwnd)
+            tol = 10  # neviditelné DWM rámečky posouvají rect o ~7 px
+            return (abs(r.left - wx) <= tol and abs(r.top - wy) <= tol and
+                    abs((r.right - r.left) - ww) <= tol and
+                    abs((r.bottom - r.top) - wh) <= tol)
+        except Exception:
+            return False
+
+    def _rect_without_anchors(self, hwnd):
+        """Rect (x, y, w, h), který by okno mělo, kdyby kotvy neexistovaly:
+        pracovní plocha monitoru rozšířená o recty kotev na témž monitoru
+        (hlavní panel zůstává nedotčený). None, když na monitoru žádná kotva není."""
+        mx, my, mw, mh = self._monitor_rect_for(hwnd)
+        wx, wy, ww, wh = self._work_area_for(hwnd)
+        l, t, r, b = wx, wy, wx + ww, wy + wh
+        found = False
+        for anc, data in list(self.anchored_hwnds.items()):
+            if anc == hwnd:
+                continue
+            ax1, ay1, ax2, ay2 = data.get("rect", (0, 0, 0, 0))
+            cx, cy = (ax1 + ax2) // 2, (ay1 + ay2) // 2
+            if not (mx <= cx < mx + mw and my <= cy < my + mh):
+                continue  # kotva na jiném monitoru
+            found = True
+            l, t, r, b = min(l, ax1), min(t, ay1), max(r, ax2), max(b, ay2)
+        if not found:
+            return None
+        # Nepřesáhnout monitor.
+        l, t = max(l, mx), max(t, my)
+        r, b = min(r, mx + mw), min(b, my + mh)
+        return (l, t, r - l, b - t)
 
     def _keep_ppp_above_anchors(self):
         """Drží ppp okno nad všemi kotvami. Volá se při zapnutí ppp a pak
@@ -2603,6 +2706,22 @@ class WindowSwitcherApp:
             User32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, flags)
         except Exception:
             pass
+        # Roztažené maximalizované okno drž roztažené: přepočet work area
+        # (např. změna stavu jiné kotvy) ho Windows vrátí do pracovní plochy.
+        # Nezasahuj, když uživatel právě táhne myší.
+        if (self.ppp_restore_rect and self.ppp_was_maximized
+                and not (User32.GetAsyncKeyState(0x01) & 0x8000)):
+            try:
+                target = self._rect_without_anchors(hwnd)
+                cur = RECT()
+                if target and User32.GetWindowRect(hwnd, ctypes.byref(cur)):
+                    tx, ty, tw, th = target
+                    if (abs(cur.left - tx) > 5 or abs(cur.top - ty) > 5 or
+                            abs((cur.right - cur.left) - tw) > 5 or
+                            abs((cur.bottom - cur.top) - th) > 5):
+                        self._stretch_window(hwnd, target, extra_flags=SWP_NOACTIVATE_FLAG)
+            except Exception:
+                pass
         # Kotvy zasuň pod ppp okno (hWndInsertAfter = ppp okno). Kotva zůstává
         # topmost, jen v z-order pod naším oknem.
         for anc in list(self.anchored_hwnds.keys()):
@@ -2614,16 +2733,30 @@ class WindowSwitcherApp:
             except Exception:
                 pass
 
+    def _clear_ppp_state(self):
+        """Zapomene ppp stav bez zásahu do oken (okno už bylo ošetřeno jinde,
+        nebo neexistuje)."""
+        self.ppp_hwnd = None
+        self.ppp_was_topmost = False
+        self.ppp_restore_rect = None
+        self.ppp_was_maximized = False
+
     def _restore_ppp_window(self):
         """Ukončí ppp: okno se vrátí zpět pod kotvy. Pozici ani velikost
         neřešíme – ppp je nikdy neměnilo."""
         hwnd = self.ppp_hwnd
         was_topmost = self.ppp_was_topmost
-        self.ppp_hwnd = None
-        self.ppp_was_topmost = False
+        restore_rect = self.ppp_restore_rect
+        was_max = self.ppp_was_maximized
+        self._clear_ppp_state()
         if not hwnd or not User32.IsWindow(hwnd):
             return
         try:
+            if restore_rect:
+                # Okno bylo roztažené přes pruh kotev → vrať původní velikost.
+                # WS_MAXIMIZE neměníme (mmm dělá totéž), takže maximalizované
+                # okno zůstane maximalizované – jen zpět v pracovní ploše.
+                self._unstretch_window(hwnd, restore_rect, was_max)
             if not was_topmost:
                 # Okno topmost původně nebylo → shoď mu ho (tím se dostane pod kotvy).
                 User32.SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0,
@@ -2789,8 +2922,7 @@ class WindowSwitcherApp:
         # jinak by v ppp_was_topmost zůstalo „bylo topmost" a okno by po ztrátě
         # fokusu zůstalo natrvalo „vždy navrchu".
         if hwnd == self.ppp_hwnd:
-            self.ppp_hwnd = None
-            self.ppp_was_topmost = False
+            self._clear_ppp_state()
         if hwnd in self.anchored_hwnds:
             User32.SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE_FLAG)
             User32.RemovePropW(hwnd, "WinSwitcherAnchored")
@@ -2822,8 +2954,7 @@ class WindowSwitcherApp:
             User32.RemovePropW(hwnd, "WinSwitcherAnchored")
             # Uklízíme okno, které je zrovna vyzdvižené přes ppp? Zruš i ppp stav.
             if hwnd == self.ppp_hwnd:
-                self.ppp_hwnd = None
-                self.ppp_was_topmost = False
+                self._clear_ppp_state()
         except Exception:
             return False
         return True
@@ -2841,8 +2972,7 @@ class WindowSwitcherApp:
                 self.mmm_restore = None
             # Totéž pro ppp okno (vyzdvižené nad kotvy).
             if self.ppp_hwnd and not User32.IsWindow(self.ppp_hwnd):
-                self.ppp_hwnd = None
-                self.ppp_was_topmost = False
+                self._clear_ppp_state()
             # Zmizely všechny kotvy (uživatel je odkotvil / zavřel), zatímco ppp
             # běží? Pak nad čím být navrchu – ppp ukonči a okno řádně vrať dolů.
             # Bez tohoto by okno zůstalo natrvalo „vždy navrchu": udržovací tik
@@ -3369,8 +3499,7 @@ class WindowSwitcherApp:
             # stav – TOPMOST jsme mu právě shodili a ppp_was_topmost=True by
             # jinak zablokovalo pozdější úklid.
             if h == self.ppp_hwnd:
-                self.ppp_hwnd = None
-                self.ppp_was_topmost = False
+                self._clear_ppp_state()
         # Pojistka proti osiřelé kotvě: okno mohlo vypadnout z anchored_hwnds bez
         # shození TOPMOST (recyklace HWND, neshoda kontextu, selhané volání).
         # Projdi přání této skupiny a u živých „kotev" bez záznamu shoď TOPMOST,

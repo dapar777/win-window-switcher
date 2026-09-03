@@ -28,8 +28,9 @@ window_height 680
 hotkey_modifier alt
 hotkey_key f12
 
-# Přímá zkratka pro ppp – vyzdvihne AKTIVNÍ okno nad ukotvená (kotvy), aniž by
-# se otevřel přepínač. Platí jen dokud okno zůstane aktivní; opětovný stisk nad
+# Přímá zkratka pro ppp/qqq – vyzdvihne AKTIVNÍ okno nad ukotvená (kotvy), aniž by
+# se otevřel přepínač (maximalizované okno navíc roztáhne i přes pruh kotev).
+# Platí jen dokud okno zůstane aktivní; opětovný stisk nad
 # týmž oknem vyzdvižení zruší. Stejný zápis jako u hotkey_modifier / hotkey_key
 # (modifikátory: win, ctrl, alt, shift – lze kombinovat přes "+").
 # Bez těchto dvou řádků je zkratka vypnutá a ppp jde jen přes přepínač.
