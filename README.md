@@ -139,6 +139,8 @@ za běhu načíst klávesou **Ctrl + R**.
 |-------|---------|---------|-------|
 | `hotkey_modifier` | `win`, `ctrl`, `alt`, `shift` (lze kombinovat `+`) | `win` | Modifikátor globální zkratky. Příklady: `alt`, `ctrl+shift`. |
 | `hotkey_key` | `tab`, `space`, `caps`, `f1`–`f24`, jedno písmeno/číslice nebo hex kód | `tab` | Hlavní klávesa globální zkratky. |
+| `ppp_hotkey_modifier` | stejné jako `hotkey_modifier` | *(vypnuto)* | Modifikátor **přímé zkratky pro `ppp`** (vyzdvižení okna nad kotvy bez otevírání přepínače). |
+| `ppp_hotkey_key` | stejné jako `hotkey_key` | *(vypnuto)* | Klávesa přímé zkratky pro `ppp`. Bez obou `ppp_hotkey_*` voleb je zkratka vypnutá. |
 | `show_thumbnails` | `true` / `false` | `false` | Velký **boční živý náhled** vybraného okna (DWM). |
 | `show_list_thumbnails` | `true` / `false` | `true` | Malé **živé náhledy přímo v řádcích** seznamu. |
 | `list_thumbnail_scale` | desetinné číslo | `5.0` | Měřítko malých náhledů (základ 48×30 px × měřítko). |
@@ -163,6 +165,10 @@ za běhu načíst klávesou **Ctrl + R**.
 ```text
 hotkey_modifier alt
 hotkey_key f12
+
+# přímá zkratka pro ppp (nepovinné)
+ppp_hotkey_modifier alt
+ppp_hotkey_key f11
 ```
 
 ### Zkratky pro přepnutí / spuštění
@@ -235,6 +241,7 @@ Tyto příkazy se píší přímo do vyhledávacího pole přepínače. `gg<x>` 
 | `kkk` | Ukotvit / odkotvit předchozí aktivní okno (bez vazby na skupinu). |
 | `kka` | Ukotvit / odkotvit předchozí aktivní okno **globálně** – navrchu nad všemi skupinami a zároveň **členem každé skupiny** (i budoucí). |
 | `mmm` | **Maximalizovat přes vše** – roztáhne předchozí aktivní okno přes celý monitor a navrch, **i přes ukotvená okna**. Platí **jen dokud je okno aktivní**; po přepnutí jinam se vrátí na původní velikost. |
+| `ppp` | **Vyzdvihnout nad kotvy** – vyzdvihne předchozí aktivní okno **nad ukotvená okna**, ale **nemění jeho velikost ani pozici** (na rozdíl od `mmm`). Platí **jen dokud je okno aktivní**; po přepnutí jinam se vrátí zpět pod kotvy. Opakované `ppp` na témže okně vyzdvižení zruší. Lze nastavit i **přímou klávesovou zkratku** (`ppp_hotkey_*`) a spouštět bez otevírání přepínače. |
 | `sv <název>` | Uložit **celkové** rozložení všech oken. |
 | `lv <název>` | Načíst **celkové** rozložení všech oken. |
 
@@ -285,6 +292,40 @@ zase platí jen jeho běžné zařazení. (Nezapisuje se do `groups.json`.)
 navrch **i přes ukotvená okna** (ignoruje jejich rezervovaný pruh). Platí jen dokud je okno
 aktivní – jakmile přepneš na jiné okno, vrátí se na původní velikost a ukotvená okna se zase
 objeví navrchu.
+
+**Dočasné vyzdvižení nad kotvy (`ppp`):** dá aktuální okno navrch **i přes ukotvená okna**, ale
+narozdíl od `mmm` mu **nemění velikost ani pozici** – okno zůstane přesně tam a takové, jaké je,
+jen se přestane schovávat pod kotvami. Platí jen dokud je okno aktivní; jakmile přepneš na jiné
+okno, vrátí se zpět pod kotvy. Opakované `ppp` na témže okně vyzdvižení rovnou zruší.
+
+Okno vyzdvižené přes `ppp` se drží nahoře i proti tomu, že si kotvy svoje „vždy navrchu"
+pravidelně obnovují. `ppp` na okně, které už ukotvené je (`kkk` / `kka`), ho jen dočasně
+přeřadí nad ostatní kotvy – **ukotvení mu tím nezanikne**. `mmm` a `ppp` se navzájem vylučují;
+zapnutím jednoho se druhé ukončí.
+
+Vyzdvižení se automaticky ukončí i tehdy, když zmizí důvod pro ně: odkotvíš-li vyzdvižené
+okno (`kkk` / `kka`), opustíš skupinu, ke které byla jeho kotva vázaná, nebo přestanou
+existovat všechny kotvy, `ppp` se zruší a okno se korektně vrátí dolů – nikdy nezůstane
+„vždy navrchu".
+
+**Přímá klávesová zkratka pro `ppp`:** aby se okno dalo vyzdvihnout bez otevírání přepínače,
+lze v `config.txt` nastavit vlastní globální zkratku:
+
+```
+ppp_hotkey_modifier alt
+ppp_hotkey_key f11
+```
+
+Zápis je stejný jako u hlavní zkratky – `ppp_hotkey_modifier` přijímá `win`, `ctrl`, `alt`
+a `shift` (lze kombinovat přes `+`, např. `win+alt`), `ppp_hotkey_key` pak název klávesy
+(`tab`, `space`, `caps`, `f1`–`f24`, jedno písmeno či číslici, nebo hex kód jako `0x57`).
+**Bez těchto dvou řádků je zkratka vypnutá** a `ppp` jde spustit jen přes přepínač.
+
+Zkratka funguje jako přepínač: první stisk aktivní okno vyzdvihne nad kotvy, druhý stisk nad
+týmž oknem vyzdvižení zruší. Vyzdvižení stejně jako u příkazu `ppp` platí jen dokud okno
+zůstane aktivní. Zkratka je nezávislá na hlavní – zaregistruje se i tehdy, když je hlavní
+zkratka obsazená jinou aplikací. Pokud je naopak obsazená ta pro `ppp`, přepínač to vypíše do
+konzole a běží dál bez ní.
 
 ---
 

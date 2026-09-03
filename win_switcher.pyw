@@ -219,6 +219,47 @@ WINEVENT_OUTOFCONTEXT    = 0x0000
 # --- Application Configuration ---
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.txt")
 
+
+def parse_hotkey_modifier(text):
+    """Převede zápis modifikátorů ("win+ctrl", "alt shift") na MOD_* příznaky.
+    Vrací 0, když nebyl rozpoznán žádný modifikátor."""
+    flags = 0
+    for token in re.split(r"[+\s]+", (text or "").lower()):
+        if token in ("win", "lwin", "rwin", "meta", "super"):
+            flags |= 0x0008
+        elif token in ("alt", "menu"):
+            flags |= 0x0001
+        elif token in ("ctrl", "control"):
+            flags |= 0x0002
+        elif token == "shift":
+            flags |= 0x0004
+    return flags
+
+
+def parse_hotkey_key(text, default=None):
+    """Převede název klávesy ("tab", "f9", "a", "0x09") na virtual-key kód.
+    Vrací `default`, když se název nepodaří rozpoznat."""
+    kv = (text or "").strip().lower()
+    if kv == "tab":
+        return 0x09
+    if kv in ("caps", "capslock", "caps_lock"):
+        return 0x14
+    if kv == "space":
+        return 0x20
+    if len(kv) == 1 and kv.isalpha():
+        return ord(kv.upper())
+    if len(kv) == 1 and kv.isdigit():
+        return ord(kv)
+    if kv.startswith("f") and kv[1:].isdigit():
+        fn = int(kv[1:])
+        if 1 <= fn <= 24:
+            return 0x6F + fn  # F1=0x70, F12=0x7B, ...
+        return default
+    try:
+        return int(kv, 16)
+    except Exception:
+        return default
+
 class WindowSwitcherApp:
     def __init__(self, root, keep_groups=False):
         self.root = root
@@ -280,6 +321,8 @@ class WindowSwitcherApp:
         self.temp_group_hwnds = {}  # hwnd -> group: dočasní členové (Ano dočasně)
         self.mmm_hwnd = None        # okno maximalizované přes vše (mmm), dokud je aktivní
         self.mmm_restore = None     # (rect, was_maximized) pro obnovu mmm okna
+        self.ppp_hwnd = None        # okno vyzdvižené nad kotvy (ppp), dokud je aktivní
+        self.ppp_was_topmost = False  # mělo ppp okno TOPMOST už předtím? (pak ho neshazuj)
         self.group_window_states = {}  # group -> {hwnd: was_minimized} při opuštění skupiny
         self.prev_active_hwnd = None
         self.prev_active_title = ""
@@ -323,6 +366,7 @@ class WindowSwitcherApp:
         
         # Bind virtual events
         self.root.bind("<<ShowSwitcher>>", lambda e: self.on_hotkey_pressed())
+        self.root.bind("<<PppHotkey>>", lambda e: self.on_ppp_hotkey_pressed())
         self.root.bind("<FocusOut>", lambda e: self.hide_switcher_on_focus_loss())
         
         # Hide initially
@@ -542,6 +586,10 @@ class WindowSwitcherApp:
         self.window_height = 680 # default height
         self.hotkey_modifier = 0x0008 # MOD_WIN (Win key)
         self.hotkey_vk = 0x09 # VK_TAB (Tab key)
+        # Přímá zkratka pro ppp (vyzdvižení nad kotvy) – bez otevírání switcheru.
+        # None = vypnuto (zkratka se nezaregistruje).
+        self.ppp_hotkey_modifier = None
+        self.ppp_hotkey_vk = None
         # Okna, která se smí zobrazit NAD ukotvenými (always-on-top) okny –
         # typicky výběr vkládané položky ve správci schránky Ditto. Shoda podle
         # třídy okna nebo názvu procesu (case-insensitive).
@@ -573,6 +621,12 @@ class WindowSwitcherApp:
                         "# Parametr hotkey_modifier podporuje: win, ctrl, alt, shift\n"
                         "hotkey_modifier win\n"
                         "hotkey_key tab\n"
+                        "\n"
+                        "# Přímá zkratka pro ppp – vyzdvihne aktivní okno nad ukotvená okna\n"
+                        "# (bez otevírání přepínače). Platí, dokud okno zůstane aktivní.\n"
+                        "# Odkomentuj a případně uprav; bez těchto řádků je zkratka vypnutá.\n"
+                        "# ppp_hotkey_modifier win+alt\n"
+                        "# ppp_hotkey_key p\n"
                     )
             except Exception:
                 pass
@@ -610,42 +664,26 @@ class WindowSwitcherApp:
                             continue
 
                         if line.startswith("hotkey_modifier "):
-                            mod = line.split(None, 1)[1].lower()
-                            flags = 0
-                            for token in re.split(r"[+\s]+", mod):
-                                if token in ("win", "lwin", "rwin", "meta", "super"):
-                                    flags |= 0x0008
-                                elif token in ("alt", "menu"):
-                                    flags |= 0x0001
-                                elif token in ("ctrl", "control"):
-                                    flags |= 0x0002
-                                elif token == "shift":
-                                    flags |= 0x0004
+                            flags = parse_hotkey_modifier(line.split(None, 1)[1])
                             if flags:
                                 self.hotkey_modifier = flags
                             continue
 
                         if line.startswith("hotkey_key "):
-                            kv = line.split(None, 1)[1].lower()
-                            if kv == "tab":
-                                self.hotkey_vk = 0x09
-                            elif kv in ("caps", "capslock", "caps_lock"):
-                                self.hotkey_vk = 0x14
-                            elif kv == "space":
-                                self.hotkey_vk = 0x20
-                            elif len(kv) == 1 and kv.isalpha():
-                                self.hotkey_vk = ord(kv.upper())
-                            elif len(kv) == 1 and kv.isdigit():
-                                self.hotkey_vk = ord(kv)
-                            elif kv.startswith("f") and kv[1:].isdigit():
-                                fn = int(kv[1:])
-                                if 1 <= fn <= 24:
-                                    self.hotkey_vk = 0x6F + fn  # F1=0x70, F12=0x7B, ...
-                            else:
-                                try:
-                                    self.hotkey_vk = int(kv, 16)
-                                except Exception:
-                                    self.hotkey_vk = 0x09 # Fallback tab
+                            self.hotkey_vk = parse_hotkey_key(
+                                line.split(None, 1)[1], self.hotkey_vk)
+                            continue
+
+                        # Přímá zkratka pro ppp (vyzdvižení okna nad kotvy).
+                        if line.startswith("ppp_hotkey_modifier "):
+                            flags = parse_hotkey_modifier(line.split(None, 1)[1])
+                            if flags:
+                                self.ppp_hotkey_modifier = flags
+                            continue
+
+                        if line.startswith("ppp_hotkey_key "):
+                            self.ppp_hotkey_vk = parse_hotkey_key(
+                                line.split(None, 1)[1], self.ppp_hotkey_vk)
                             continue
 
                         if line.startswith("new_window_action "):
@@ -1371,6 +1409,15 @@ class WindowSwitcherApp:
             self.filtered_items.append({
                 "type": "maximize_temp",
                 "title": f"🗖 [Maximalizovat přes vše] '{cur_title}' (dokud je aktivní)",
+            })
+        elif search_text.lower() == "ppp":
+            cur_hwnd = self.prev_active_hwnd
+            cur_title = self.prev_active_title or "Neznámé"
+            is_promoted = cur_hwnd and cur_hwnd == self.ppp_hwnd
+            label = "⬆ [Zrušit vyzdvižení nad kotvy]" if is_promoted else "⬆ [Vyzdvihnout nad kotvy]"
+            self.filtered_items.append({
+                "type": "promote_temp",
+                "title": f"{label} '{cur_title}' (dokud je aktivní)",
             })
         else:
             cleared_group = self.last_group
@@ -2449,6 +2496,9 @@ class WindowSwitcherApp:
         # Případné předchozí mmm okno (jiné) nejdřív obnov.
         if self.mmm_hwnd and self.mmm_hwnd != hwnd:
             self._restore_mmm_window()
+        # mmm a ppp se na témž okně vylučují (obojí hraje se z-order/TOPMOST).
+        if self.ppp_hwnd:
+            self._restore_ppp_window()
         if User32.IsIconic(hwnd):
             User32.ShowWindow(hwnd, SW_RESTORE)
         rect = RECT()
@@ -2503,6 +2553,136 @@ class WindowSwitcherApp:
         if User32.GetWindow(hwnd, GW_OWNER):
             return
         self._restore_mmm_window()
+
+    # --------------- ppp: dočasné vyzdvižení nad kotvy ---------------
+
+    def _promote_temp_window(self, hwnd):
+        """ppp: vyzdvihne okno NAD ukotvená (topmost) okna, ale NEMĚNÍ jeho
+        velikost ani pozici – na rozdíl od mmm zůstává okno tak, jak je. Platí
+        jen dokud okno zůstane aktivní; po přepnutí jinam se vrátí zpět pod
+        kotvy (viz _check_ppp_restore).
+
+        Samotné SetWindowPos(HWND_TOPMOST) nestačí: kotvy jsou také topmost a
+        _maintain_anchored_windows jim TOPMOST periodicky obnovuje, takže by se
+        okno znovu propadlo pod ně. Proto se – stejně jako u overlay oken
+        (Ditto) – každá kotva navíc EXPLICITNĚ zasune hned pod naše okno
+        (viz _keep_ppp_above_anchors)."""
+        if not hwnd or not User32.IsWindow(hwnd):
+            return
+        if self.ppp_hwnd == hwnd:
+            # Už je ppp aktivní pro toto okno – jen ho znovu vyzdvihni
+            # (NEPŘEPISUJ ppp_was_topmost, jinak bychom si přepsali původní stav).
+            User32.SetForegroundWindow(hwnd)
+            self._keep_ppp_above_anchors()
+            return
+        # Případné předchozí ppp okno (jiné) nejdřív vrať zpět.
+        if self.ppp_hwnd and self.ppp_hwnd != hwnd:
+            self._restore_ppp_window()
+        # mmm a ppp se vylučují – běžící mmm nejdřív obnov.
+        if self.mmm_hwnd:
+            self._restore_mmm_window()
+        if User32.IsIconic(hwnd):
+            User32.ShowWindow(hwnd, SW_RESTORE)
+        # Okno, které už topmost JE (typicky ukotvená kotva), po skončení ppp
+        # nesmíme shodit do NOTOPMOST – jinak bychom mu zrušili ukotvení.
+        ex_style = User32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+        self.ppp_was_topmost = bool(ex_style & WS_EX_TOPMOST) or hwnd in self.anchored_hwnds
+        self.ppp_hwnd = hwnd
+        User32.SetForegroundWindow(hwnd)
+        self._keep_ppp_above_anchors()
+
+    def _keep_ppp_above_anchors(self):
+        """Drží ppp okno nad všemi kotvami. Volá se při zapnutí ppp a pak
+        z maintenance tiku (kotvy si TOPMOST obnovují, takže bez toho by okno
+        po chvíli zase zmizelo pod nimi). Nekrade fokus."""
+        hwnd = self.ppp_hwnd
+        if not hwnd or not User32.IsWindow(hwnd):
+            return
+        flags = SWP_NOMOVE | SWP_NOSIZE_FLAG | SWP_NOACTIVATE_FLAG
+        try:
+            User32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, flags)
+        except Exception:
+            pass
+        # Kotvy zasuň pod ppp okno (hWndInsertAfter = ppp okno). Kotva zůstává
+        # topmost, jen v z-order pod naším oknem.
+        for anc in list(self.anchored_hwnds.keys()):
+            if anc == hwnd:
+                continue
+            try:
+                if User32.IsWindow(anc):
+                    User32.SetWindowPos(anc, hwnd, 0, 0, 0, 0, flags)
+            except Exception:
+                pass
+
+    def _restore_ppp_window(self):
+        """Ukončí ppp: okno se vrátí zpět pod kotvy. Pozici ani velikost
+        neřešíme – ppp je nikdy neměnilo."""
+        hwnd = self.ppp_hwnd
+        was_topmost = self.ppp_was_topmost
+        self.ppp_hwnd = None
+        self.ppp_was_topmost = False
+        if not hwnd or not User32.IsWindow(hwnd):
+            return
+        try:
+            if not was_topmost:
+                # Okno topmost původně nebylo → shoď mu ho (tím se dostane pod kotvy).
+                User32.SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0,
+                                    SWP_NOMOVE | SWP_NOSIZE_FLAG | SWP_NOACTIVATE_FLAG)
+            # Kotvám obnov jejich TOPMOST pozici v z-order (byly zasunuté pod ppp).
+            for anc in list(self.anchored_hwnds.keys()):
+                if anc == hwnd:
+                    continue
+                if User32.IsWindow(anc):
+                    User32.SetWindowPos(anc, HWND_TOPMOST, 0, 0, 0, 0,
+                                        SWP_NOMOVE | SWP_NOSIZE_FLAG | SWP_NOACTIVATE_FLAG)
+        except Exception:
+            pass
+
+    def _check_ppp_restore(self, hwnd):
+        """Spouští se po změně foreground okna. Když aktivní přestane být ppp
+        okno (a fokus dostane skutečné okno, ne systémový overlay), ppp se
+        ukončí a okno se vrátí pod kotvy."""
+        if not self.ppp_hwnd:
+            return
+        if User32.GetForegroundWindow() != hwnd:
+            return  # přechodný event
+        if hwnd == self.ppp_hwnd:
+            return  # ppp okno je stále aktivní – nech ho nahoře
+        # Stejné filtry jako u mmm – ignoruj systémové overlaye (Alt+Tab,
+        # Task View, notifikace…), aby se ppp neukončilo předčasně.
+        if User32.GetWindowTextLengthW(hwnd) == 0:
+            return
+        ex_style = User32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+        hidden_by_switcher = bool(User32.GetPropW(hwnd, "WinSwitcherExStyle"))
+        if (ex_style & WS_EX_TOOLWINDOW) and not hidden_by_switcher:
+            return
+        if User32.GetWindow(hwnd, GW_OWNER):
+            return
+        self._restore_ppp_window()
+
+    def on_ppp_hotkey_pressed(self):
+        """Přímá zkratka pro ppp – přepne vyzdvižení AKTUÁLNĚ aktivního okna nad
+        kotvy, bez otevírání switcheru. Okno si bereme z GetForegroundWindow
+        (ne z prev_active_hwnd – ten plní až otevření switcheru, takže by tu byl
+        zastaralý). Opakovaný stisk nad týmž oknem vyzdvižení zase zruší."""
+        try:
+            hwnd = User32.GetForegroundWindow()
+            if not hwnd or not User32.IsWindow(hwnd):
+                return
+            # Vlastní okna switcheru (dialogy, OSD) ignoruj – zkratka má platit
+            # pro okno uživatele, ne pro nás.
+            pid = ctypes.c_ulong(0)
+            User32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            if pid.value == os.getpid():
+                return
+            # Zpětnou vazbu nepotřebujeme – okno viditelně skočí nad kotvy
+            # (stejně jako u mmm, které také nic nehlásí).
+            if hwnd == self.ppp_hwnd:
+                self._restore_ppp_window()
+            else:
+                self._promote_temp_window(hwnd)
+        except Exception:
+            pass
 
     def _minimize_non_group_windows(self, group_name):
         """Minimalizuje všechna okna, která nepatří do zadané skupiny."""
@@ -2605,6 +2785,12 @@ class WindowSwitcherApp:
     def _unanchor_window(self, hwnd):
         """Odkotvit okno: vrátí HWND_NOTOPMOST a obnoví work area."""
         was_global = self._is_global_anchor(hwnd)
+        # Odkotvujeme okno, které je zrovna vyzdvižené přes ppp? Ukonči ppp,
+        # jinak by v ppp_was_topmost zůstalo „bylo topmost" a okno by po ztrátě
+        # fokusu zůstalo natrvalo „vždy navrchu".
+        if hwnd == self.ppp_hwnd:
+            self.ppp_hwnd = None
+            self.ppp_was_topmost = False
         if hwnd in self.anchored_hwnds:
             User32.SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE_FLAG)
             User32.RemovePropW(hwnd, "WinSwitcherAnchored")
@@ -2634,6 +2820,10 @@ class WindowSwitcherApp:
                 return False  # není to naše kotva
             User32.SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE_FLAG)
             User32.RemovePropW(hwnd, "WinSwitcherAnchored")
+            # Uklízíme okno, které je zrovna vyzdvižené přes ppp? Zruš i ppp stav.
+            if hwnd == self.ppp_hwnd:
+                self.ppp_hwnd = None
+                self.ppp_was_topmost = False
         except Exception:
             return False
         return True
@@ -2649,6 +2839,17 @@ class WindowSwitcherApp:
             if self.mmm_hwnd and not User32.IsWindow(self.mmm_hwnd):
                 self.mmm_hwnd = None
                 self.mmm_restore = None
+            # Totéž pro ppp okno (vyzdvižené nad kotvy).
+            if self.ppp_hwnd and not User32.IsWindow(self.ppp_hwnd):
+                self.ppp_hwnd = None
+                self.ppp_was_topmost = False
+            # Zmizely všechny kotvy (uživatel je odkotvil / zavřel), zatímco ppp
+            # běží? Pak nad čím být navrchu – ppp ukonči a okno řádně vrať dolů.
+            # Bez tohoto by okno zůstalo natrvalo „vždy navrchu": udržovací tik
+            # se při prázdném anchored_hwnds předčasně vrací, takže by ppp
+            # nikdo neuklidil.
+            if self.ppp_hwnd and not self.anchored_hwnds:
+                self._restore_ppp_window()
             if self.anchored_hwnds:
                 dead = [h for h in list(self.anchored_hwnds.keys()) if not User32.IsWindow(h)]
                 for h in dead:
@@ -2774,6 +2975,10 @@ class WindowSwitcherApp:
                                         SWP_NOZORDER | SWP_NOACTIVATE)
                 except Exception:
                     pass
+        # Okno vyzdvižené přes ppp drž nad kotvami – kotvy si výše obnovují
+        # TOPMOST, takže bez toho by se okno po chvíli propadlo pod ně.
+        if self.ppp_hwnd:
+            self._keep_ppp_above_anchors()
         # Overlay okna (Ditto) drž nad kotvami – po případném re-assertu TOPMOST
         # kotvy by jinak Ditto zůstalo schované pod ní.
         self._keep_overlay_above_anchors()
@@ -2934,6 +3139,10 @@ class WindowSwitcherApp:
     def _restore_all_workareas(self):
         """Obnoví pracovní plochu odregistrováním všech AppBar oken.
         Také odstraňuje TOPMOST ze všech dosud ukotvených oken."""
+        # Nejdřív ukonči ppp (jinak by okno vyzdvižené nad kotvy zůstalo
+        # „vždy navrchu" i po ukončení switcheru).
+        if self.ppp_hwnd:
+            self._restore_ppp_window()
         for hwnd in list(self.anchored_hwnds.keys()):
             try:
                 User32.SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE_FLAG)
@@ -3043,8 +3252,8 @@ class WindowSwitcherApp:
         def _cb(hHook, event, hwnd, idObject, idChild, dwThread, dwTime):
             if not hwnd:
                 return
-            # Hook potřebujeme, když je aktivní skupina NEBO běží mmm (obnova okna).
-            if not self.last_activated_group and not self.mmm_hwnd:
+            # Hook potřebujeme, když je aktivní skupina NEBO běží mmm/ppp (obnova okna).
+            if not self.last_activated_group and not self.mmm_hwnd and not self.ppp_hwnd:
                 return
             # Ignoruj okna našeho vlastního procesu (switcher, dialogy, tray)
             pid = ctypes.c_ulong(0)
@@ -3084,6 +3293,7 @@ class WindowSwitcherApp:
             while True:
                 hwnd = self._fg_queue.get_nowait()
                 self._check_mmm_restore(hwnd)
+                self._check_ppp_restore(hwnd)
                 self._check_fg_for_group_exit(hwnd)
         except queue.Empty:
             pass
@@ -3155,6 +3365,12 @@ class WindowSwitcherApp:
             except Exception:
                 pass
             self.anchored_hwnds.pop(h, None)
+            # Uvolňujeme okno, které je zrovna vyzdvižené přes ppp? Zahoď ppp
+            # stav – TOPMOST jsme mu právě shodili a ppp_was_topmost=True by
+            # jinak zablokovalo pozdější úklid.
+            if h == self.ppp_hwnd:
+                self.ppp_hwnd = None
+                self.ppp_was_topmost = False
         # Pojistka proti osiřelé kotvě: okno mohlo vypadnout z anchored_hwnds bez
         # shození TOPMOST (recyklace HWND, neshoda kontextu, selhané volání).
         # Projdi přání této skupiny a u živých „kotev" bez záznamu shoď TOPMOST,
@@ -3723,8 +3939,19 @@ class WindowSwitcherApp:
             if target_hwnd:
                 self._maximize_temp_window(target_hwnd)
 
+        elif item["type"] == "promote_temp":
+            target_hwnd = self.prev_active_hwnd
+            if target_hwnd:
+                if target_hwnd == self.ppp_hwnd:
+                    # Opětovné ppp na témže okně = vypnout (toggle jako u kkk).
+                    self._restore_ppp_window()
+                    User32.SetForegroundWindow(target_hwnd)
+                else:
+                    self._promote_temp_window(target_hwnd)
+
     def listen_global_hotkey(self):
         HOTKEY_ID = 2411
+        PPP_HOTKEY_ID = 2412
         mod = getattr(self, "hotkey_modifier", 0x0008)
         vk = getattr(self, "hotkey_vk", 0x09)
         
@@ -3743,20 +3970,42 @@ class WindowSwitcherApp:
                 if not success:
                     last_error = ctypes.GetLastError()
                     print(f"Nepodařilo se zaregistrovat žádnou klávesovou zkratku (kód chyby {last_error}).")
-                    return
+                    # NEVRACÍME se – zkratka pro ppp je nezávislá a může se
+                    # zaregistrovat i tehdy, když je hlavní zkratka obsazená.
+
+        # Volitelná PŘÍMÁ zkratka pro ppp – vyzdvihne aktivní okno nad kotvy
+        # rovnou, bez otevírání switcheru. Musí se registrovat na TOMTO vlákně,
+        # protože WM_HOTKEY chodí do fronty vlákna, které zkratku zaregistrovalo.
+        ppp_mod = getattr(self, "ppp_hotkey_modifier", None)
+        ppp_vk = getattr(self, "ppp_hotkey_vk", None)
+        ppp_registered = False
+        if ppp_mod and ppp_vk:
+            ppp_registered = bool(User32.RegisterHotKey(None, PPP_HOTKEY_ID, ppp_mod, ppp_vk))
+            if not ppp_registered:
+                print(f"Zkratku pro ppp se nepodařilo zaregistrovat "
+                      f"(kód chyby {ctypes.GetLastError()}) – je nejspíš obsazená jinou aplikací.")
+
+        if not success and not ppp_registered:
+            return  # nezaregistrovala se ani jedna zkratka – smyčka nemá co dělat
 
         try:
             msg = ctypes.wintypes.MSG()
             while self.hotkey_running:
                 if User32.GetMessageW(ctypes.byref(msg), None, 0, 0) != 0:
                     if msg.message == WM_HOTKEY:
-                        self.root.event_generate("<<ShowSwitcher>>", when="tail")
+                        if msg.wParam == PPP_HOTKEY_ID:
+                            self.root.event_generate("<<PppHotkey>>", when="tail")
+                        else:
+                            self.root.event_generate("<<ShowSwitcher>>", when="tail")
                     User32.TranslateMessage(ctypes.byref(msg))
                     User32.DispatchMessageW(ctypes.byref(msg))
         except Exception as e:
             print(f"Chyba v hotkey loopu: {e}")
         finally:
-            User32.UnregisterHotKey(None, HOTKEY_ID)
+            if success:
+                User32.UnregisterHotKey(None, HOTKEY_ID)
+            if ppp_registered:
+                User32.UnregisterHotKey(None, PPP_HOTKEY_ID)
 
     # --- ITaskbarList COM helpers ---
 
