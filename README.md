@@ -63,7 +63,8 @@ pythonw.exe win_switcher.pyw
 ```
 
 Případně použijte přiložený dávkový soubor **`start_switcher.bat`**, který nejprve ukončí
-případnou předchozí instanci a poté přepínač znovu spustí:
+případnou předchozí instanci a poté přepínač znovu spustí. Ukončuje **jen** procesy Pythonu,
+které mají v příkazové řádce `win_switcher.pyw` – jiné aplikace v Pythonu nechá běžet:
 
 ```powershell
 start_switcher.bat
