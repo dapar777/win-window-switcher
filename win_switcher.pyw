@@ -84,6 +84,8 @@ User32.GetMonitorInfoW.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
 User32.GetMonitorInfoW.restype = ctypes.c_bool
 User32.MonitorFromWindow.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
 User32.MonitorFromWindow.restype = ctypes.c_void_p
+User32.GetWindow.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+User32.GetWindow.restype = ctypes.c_void_p
 
 Shell32 = ctypes.windll.shell32
 Shell32.SHAppBarMessage.argtypes = [ctypes.c_uint, ctypes.c_void_p]
@@ -326,7 +328,7 @@ class WindowSwitcherApp:
         self.ppp_hwnd = None        # okno vyzdvižené nad kotvy (ppp), dokud je aktivní
         self.ppp_was_topmost = False  # mělo ppp okno TOPMOST už předtím? (pak ho neshazuj)
         self.ppp_restore_rect = None  # původní rect, když ppp okno roztáhlo přes pruh kotev
-        self.ppp_was_maximized = False  # bylo roztažené ppp okno maximalizované? (obnova stylu)
+        self.ppp_suspended_anchors = set()  # kotvy, jejichž rezervaci pruhu ppp pozastavilo
         self.group_window_states = {}  # group -> {hwnd: was_minimized} při opuštění skupiny
         self.prev_active_hwnd = None
         self.prev_active_title = ""
@@ -599,6 +601,10 @@ class WindowSwitcherApp:
         # třídy okna nebo názvu procesu (case-insensitive).
         self.anchor_overlay_classes = {"qpasteclass"}   # Ditto quick-paste
         self.anchor_overlay_processes = {"ditto.exe"}   # Ditto
+        # (hwnd, pid) -> bool: klasifikace je drahá (OpenProcess + cesta k exe)
+        # a pro daný HWND se nemění; bez cache běžela pro každé viditelné okno
+        # každých 800 ms. Klíč s PID chrání před recyklací HWND.
+        self._overlay_cache = {}
 
         if not os.path.exists(CONFIG_FILE):
             try:
@@ -2594,14 +2600,45 @@ class WindowSwitcherApp:
         # kotev (ne přes hlavní panel – tím se liší od mmm); po skončení ppp
         # se vrátí na původní rect (viz _restore_ppp_window).
         self.ppp_restore_rect = None
+        self.ppp_suspended_anchors = set()
         if self.anchored_hwnds and self._covers_work_area(hwnd):
-            cur = RECT()
-            target = self._rect_without_anchors(hwnd)
-            if target and User32.GetWindowRect(hwnd, ctypes.byref(cur)):
-                self.ppp_restore_rect = (cur.left, cur.top, cur.right, cur.bottom)
-                self.ppp_was_maximized = self._stretch_window(hwnd, target)
+            if User32.GetWindowLongW(hwnd, -16) & 0x01000000:  # WS_MAXIMIZE
+                # Maximalizované okno NEROZTAHUJEME ručně: SetWindowPos na něm
+                # Windows tiše ignoruje a shození stylu WS_MAXIMIZE nutí
+                # aplikace (Edge, Electron) k odskoku a dvojí změně velikosti –
+                # u Edge s Citrixem viditelně pomalé. Místo toho se na dobu ppp
+                # POZASTAVÍ rezervace pruhu kotev na tomto monitoru a Windows
+                # okno samo přeskládá do větší pracovní plochy – jedním čistým
+                # krokem (~20–40 ms), WS_MAXIMIZE zůstává. Ostatní maximalizovaná
+                # okna na monitoru se roztáhnou také, jsou ale schovaná pod ním.
+                suspended = self._anchors_on_monitor_of(hwnd)
+                if suspended:
+                    self.ppp_suspended_anchors = suspended
+                    self._apply_anchor_workarea()
+            else:
+                # Nemaximalizované okno roztažené přes pracovní plochu: stačí
+                # obyčejný SetWindowPos (bez změny stylu, bez odskoku).
+                cur = RECT()
+                target = self._rect_without_anchors(hwnd)
+                if target and User32.GetWindowRect(hwnd, ctypes.byref(cur)):
+                    self.ppp_restore_rect = (cur.left, cur.top, cur.right, cur.bottom)
+                    tx, ty, tw, th = target
+                    User32.SetWindowPos(hwnd, None, tx, ty, tw, th, SWP_NOZORDER_FLAG)
         User32.SetForegroundWindow(hwnd)
         self._keep_ppp_above_anchors()
+
+    def _anchors_on_monitor_of(self, hwnd):
+        """Množina kotev ležících na témž monitoru jako okno (kromě něj samého)."""
+        mx, my, mw, mh = self._monitor_rect_for(hwnd)
+        out = set()
+        for anc, data in list(self.anchored_hwnds.items()):
+            if anc == hwnd:
+                continue
+            ax1, ay1, ax2, ay2 = data.get("rect", (0, 0, 0, 0))
+            cx, cy = (ax1 + ax2) // 2, (ay1 + ay2) // 2
+            if mx <= cx < mx + mw and my <= cy < my + mh:
+                out.add(anc)
+        return out
 
     def _stretch_window(self, hwnd, target, insert_after=None, extra_flags=0):
         """Roztáhne okno na target (x, y, w, h). Maximalizované okno drží Windows
@@ -2702,33 +2739,19 @@ class WindowSwitcherApp:
         if not hwnd or not User32.IsWindow(hwnd):
             return
         flags = SWP_NOMOVE | SWP_NOSIZE_FLAG | SWP_NOACTIVATE_FLAG
+        # Z-order operace jen když stav nesedí (viz _promote_anchor_overlay).
         try:
-            User32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, flags)
+            if not (User32.GetWindowLongW(hwnd, GWL_EXSTYLE) & WS_EX_TOPMOST):
+                User32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, flags)
         except Exception:
             pass
-        # Roztažené maximalizované okno drž roztažené: přepočet work area
-        # (např. změna stavu jiné kotvy) ho Windows vrátí do pracovní plochy.
-        # Nezasahuj, když uživatel právě táhne myší.
-        if (self.ppp_restore_rect and self.ppp_was_maximized
-                and not (User32.GetAsyncKeyState(0x01) & 0x8000)):
-            try:
-                target = self._rect_without_anchors(hwnd)
-                cur = RECT()
-                if target and User32.GetWindowRect(hwnd, ctypes.byref(cur)):
-                    tx, ty, tw, th = target
-                    if (abs(cur.left - tx) > 5 or abs(cur.top - ty) > 5 or
-                            abs((cur.right - cur.left) - tw) > 5 or
-                            abs((cur.bottom - cur.top) - th) > 5):
-                        self._stretch_window(hwnd, target, extra_flags=SWP_NOACTIVATE_FLAG)
-            except Exception:
-                pass
-        # Kotvy zasuň pod ppp okno (hWndInsertAfter = ppp okno). Kotva zůstává
-        # topmost, jen v z-order pod naším oknem.
+        # Kotvy zasuň pod ppp okno (hWndInsertAfter = ppp okno) – jen ty, které
+        # jsou nad ním. Kotva zůstává topmost, jen v z-order pod naším oknem.
         for anc in list(self.anchored_hwnds.keys()):
             if anc == hwnd:
                 continue
             try:
-                if User32.IsWindow(anc):
+                if User32.IsWindow(anc) and self._is_above(anc, hwnd):
                     User32.SetWindowPos(anc, hwnd, 0, 0, 0, 0, flags)
             except Exception:
                 pass
@@ -2739,7 +2762,11 @@ class WindowSwitcherApp:
         self.ppp_hwnd = None
         self.ppp_was_topmost = False
         self.ppp_restore_rect = None
-        self.ppp_was_maximized = False
+        if self.ppp_suspended_anchors:
+            # Rezervaci pruhu pozastavenou pro ppp vrať – Windows maximalizované
+            # okno samo zmenší zpět do pracovní plochy.
+            self.ppp_suspended_anchors = set()
+            self._apply_anchor_workarea()
 
     def _restore_ppp_window(self):
         """Ukončí ppp: okno se vrátí zpět pod kotvy. Pozici ani velikost
@@ -2747,27 +2774,20 @@ class WindowSwitcherApp:
         hwnd = self.ppp_hwnd
         was_topmost = self.ppp_was_topmost
         restore_rect = self.ppp_restore_rect
-        was_max = self.ppp_was_maximized
-        self._clear_ppp_state()
+        self._clear_ppp_state()  # vrátí i případně pozastavenou rezervaci pruhu
         if not hwnd or not User32.IsWindow(hwnd):
             return
         try:
             if restore_rect:
-                # Okno bylo roztažené přes pruh kotev → vrať původní velikost.
-                # WS_MAXIMIZE neměníme (mmm dělá totéž), takže maximalizované
-                # okno zůstane maximalizované – jen zpět v pracovní ploše.
-                self._unstretch_window(hwnd, restore_rect, was_max)
+                # Nemaximalizované okno roztažené přes pruh kotev → původní rect.
+                l, t, r, b = restore_rect
+                User32.SetWindowPos(hwnd, None, l, t, r - l, b - t,
+                                    SWP_NOZORDER_FLAG | SWP_NOACTIVATE_FLAG)
             if not was_topmost:
-                # Okno topmost původně nebylo → shoď mu ho (tím se dostane pod kotvy).
+                # Okno topmost původně nebylo → shoď mu ho (tím se dostane pod
+                # kotvy; ty zůstaly topmost, žádné další přeskládání netřeba).
                 User32.SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0,
                                     SWP_NOMOVE | SWP_NOSIZE_FLAG | SWP_NOACTIVATE_FLAG)
-            # Kotvám obnov jejich TOPMOST pozici v z-order (byly zasunuté pod ppp).
-            for anc in list(self.anchored_hwnds.keys()):
-                if anc == hwnd:
-                    continue
-                if User32.IsWindow(anc):
-                    User32.SetWindowPos(anc, HWND_TOPMOST, 0, 0, 0, 0,
-                                        SWP_NOMOVE | SWP_NOSIZE_FLAG | SWP_NOACTIVATE_FLAG)
         except Exception:
             pass
 
@@ -3117,9 +3137,10 @@ class WindowSwitcherApp:
         """Registruje AppBar okna pro každou ukotvenu stranu monitoru, aby
         maximalizovaná okna nepřekrývala kotvy. Používá SHAppBarMessage –
         stejný mechanismus jako taskbar, takže Explorer jej nepřepisuje."""
-        self._remove_appbar_windows()
         if not self.anchored_hwnds:
+            self._remove_appbar_windows()
             return
+        desired = {}   # key -> (edge, appbar_rect)
 
         # Monitory i polohy kotev čteme ve FYZICKÝCH pixelech (Per-Monitor-V2),
         # aby rezervace přes SHAppBarMessage seděla i na škálovaných monitorech.
@@ -3149,6 +3170,9 @@ class WindowSwitcherApp:
             edge_extent = {}
 
             for hwnd_a, anc_data in self.anchored_hwnds.items():
+                # Kotva, jejíž rezervaci pozastavilo ppp, pruh nerezervuje.
+                if hwnd_a in self.ppp_suspended_anchors:
+                    continue
                 # Maximalizovaná kotva nerezervuje pruh – pokrývá monitor sama
                 # a rezervace by ji jen zkrátila o vlastní okraj.
                 try:
@@ -3186,6 +3210,16 @@ class WindowSwitcherApp:
                 else:  # ABE_BOTTOM
                     appbar_rect = (mx1, extent, mx2, my2)
                 key = f"{hMon}_{edge}"
+                desired[key] = (edge, appbar_rect)
+
+        # Rozdílově: zruš jen AppBary, které zmizely nebo změnily rect, a založ
+        # jen chybějící. Dřív se všechny rušily a zakládaly znovu – každá změna
+        # tak stála ~100 ms a přeskládala maximalizovaná okna na VŠECH monitorech.
+        for key in list(self._appbar_windows.keys()):
+            if key not in desired or desired[key][1] != self._appbar_windows[key][2]:
+                self._remove_appbar_window(key)
+        for key, (edge, appbar_rect) in desired.items():
+            if key not in self._appbar_windows:
                 self._create_appbar_win(key, edge, appbar_rect)
 
         # AppBar registration broadcasts WM_SETTINGCHANGE asynchronously;
@@ -3251,20 +3285,27 @@ class WindowSwitcherApp:
             Shell32.SHAppBarMessage(ABM_QUERYPOS, ctypes.byref(abd))
             Shell32.SHAppBarMessage(ABM_SETPOS,   ctypes.byref(abd))
 
-        self._appbar_windows[key] = (helper, ab_hwnd)
+        self._appbar_windows[key] = (helper, ab_hwnd, tuple(appbar_rect))
+
+    def _remove_appbar_window(self, key):
+        """Odregistruje a zničí jedno pomocné AppBar okno."""
+        entry = self._appbar_windows.pop(key, None)
+        if not entry:
+            return
+        helper, ab_hwnd = entry[0], entry[1]
+        try:
+            abd = APPBARDATA()
+            abd.cbSize = ctypes.sizeof(APPBARDATA)
+            abd.hWnd = ab_hwnd
+            Shell32.SHAppBarMessage(ABM_REMOVE, ctypes.byref(abd))
+            helper.destroy()
+        except Exception:
+            pass
 
     def _remove_appbar_windows(self):
         """Odregistruje a zničí všechna pomocná AppBar okna."""
-        for key, (helper, ab_hwnd) in list(self._appbar_windows.items()):
-            try:
-                abd = APPBARDATA()
-                abd.cbSize = ctypes.sizeof(APPBARDATA)
-                abd.hWnd = ab_hwnd
-                Shell32.SHAppBarMessage(ABM_REMOVE, ctypes.byref(abd))
-                helper.destroy()
-            except Exception:
-                pass
-        self._appbar_windows.clear()
+        for key in list(self._appbar_windows.keys()):
+            self._remove_appbar_window(key)
 
     def _restore_all_workareas(self):
         """Obnoví pracovní plochu odregistrováním všech AppBar oken.
@@ -3295,6 +3336,20 @@ class WindowSwitcherApp:
             return False
         if not (self.anchor_overlay_classes or self.anchor_overlay_processes):
             return False
+        pid = ctypes.c_ulong(0)
+        User32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        key = (hwnd, pid.value)
+        cached = self._overlay_cache.get(key)
+        if cached is not None:
+            return cached
+        result = self._classify_anchor_overlay_window(hwnd, pid.value)
+        if len(self._overlay_cache) > 2000:
+            self._overlay_cache.clear()
+        self._overlay_cache[key] = result
+        return result
+
+    def _classify_anchor_overlay_window(self, hwnd, pid_value):
+        """Necachovaná klasifikace – viz _is_anchor_overlay_window."""
         try:
             if self.anchor_overlay_classes:
                 buf = ctypes.create_unicode_buffer(256)
@@ -3302,9 +3357,7 @@ class WindowSwitcherApp:
                     if buf.value.lower() in self.anchor_overlay_classes:
                         return True
             if self.anchor_overlay_processes:
-                pid = ctypes.c_ulong(0)
-                User32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-                h_proc = Kernel32.OpenProcess(0x1000, False, pid.value)  # QUERY_LIMITED_INFORMATION
+                h_proc = Kernel32.OpenProcess(0x1000, False, pid_value)  # QUERY_LIMITED_INFORMATION
                 if h_proc:
                     try:
                         path_buf = ctypes.create_unicode_buffer(1024)
@@ -3318,23 +3371,43 @@ class WindowSwitcherApp:
             pass
         return False
 
+    def _is_above(self, a, b):
+        """True, když je okno `a` v z-order NAD oknem `b` (prochází řetěz
+        GW_HWNDPREV od `b` nahoru; nad topmost oknem bývá jen pár oken)."""
+        GW_HWNDPREV = 3
+        try:
+            h = User32.GetWindow(b, GW_HWNDPREV)
+            for _ in range(2000):
+                if not h:
+                    return False
+                if h == a:
+                    return True
+                h = User32.GetWindow(h, GW_HWNDPREV)
+        except Exception:
+            pass
+        return False
+
     def _promote_anchor_overlay(self, hwnd):
         """Zajistí, že overlay okno (Ditto) je nad kotvami.
         1) overlay dá do TOPMOST pásma; 2) každou kotvu EXPLICITNĚ zasune HNED
         POD overlay v z-order. Krok 2 je nutný, protože SetWindowPos(HWND_TOPMOST)
         na okno, které už topmost JE, ho nad kotvu nepřeřadí. Nekrade fokus."""
         flags = SWP_NOMOVE | SWP_NOSIZE_FLAG | SWP_NOACTIVATE_FLAG
+        # Každý SetWindowPos se z-orderem rozešle WM_WINDOWPOSCHANGED a nutí DWM
+        # překreslovat – proto se volá JEN když stav skutečně nesedí (dřív běžel
+        # každý tik naprázdno, což u těžkých oken působilo trhaně).
         try:
-            User32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, flags)
+            if not (User32.GetWindowLongW(hwnd, GWL_EXSTYLE) & WS_EX_TOPMOST):
+                User32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, flags)
         except Exception:
             pass
-        # Kotvy zasuň pod overlay (hWndInsertAfter = overlay). Kotva zůstává
-        # topmost, ale v z-order pod Dittem.
+        # Kotvy zasuň pod overlay (hWndInsertAfter = overlay) – jen ty, které
+        # jsou nad ním. Kotva zůstává topmost, ale v z-order pod Dittem.
         for anc in list(self.anchored_hwnds.keys()):
             if anc == hwnd:
                 continue
             try:
-                if User32.IsWindow(anc):
+                if User32.IsWindow(anc) and self._is_above(anc, hwnd):
                     User32.SetWindowPos(anc, hwnd, 0, 0, 0, 0, flags)
             except Exception:
                 pass

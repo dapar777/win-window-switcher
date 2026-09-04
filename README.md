@@ -302,7 +302,10 @@ jiné okno, vrátí se zpět pod kotvy. Opakované `ppp` na témže okně vyzdvi
   nepřekrývalo – kotva si rezervuje pruh obrazovky, do kterého maximalizace nesahá – a samotné
   přeřazení nad ni by tedy nebylo vidět. Takové okno se proto navíc **dočasně roztáhne i přes
   pruh kotev** (hlavní panel zůstane volný – tím se liší od `mmm`, které bere celý monitor).
-  Po ztrátě fokusu se vrátí zpět jako maximalizované do pracovní plochy.
+  Po ztrátě fokusu se vrátí zpět jako maximalizované do pracovní plochy. Technicky se na dobu
+  vyzdvižení jen pozastaví rezervace pruhu kotev na daném monitoru a Windows okno samo
+  přeskládá – jedinou změnou velikosti, okno zůstává maximalizované (ostatní maximalizovaná
+  okna na tom monitoru se pod ním na tu dobu roztáhnou také, jsou ale schovaná pod ním).
 
 Okno vyzdvižené přes `ppp` se drží nahoře i proti tomu, že si kotvy svoje „vždy navrchu"
 pravidelně obnovují. `ppp` na okně, které už ukotvené je (`kkk` / `kka`), ho jen dočasně
