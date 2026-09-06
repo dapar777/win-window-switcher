@@ -14,6 +14,123 @@ from tkinter import messagebox
 import pystray
 from PIL import Image, ImageDraw, ImageFont, ImageTk
 
+# ============================================================================
+# Vzhled – paleta Solarized a tokeny převzaté z c:\code\solarqt (theme.py).
+# JEDINÝ zdroj barev v tomto souboru: aplikační kód se na barvu ptá přes
+# self.t.<token> a nikde ji nepíše natvrdo. Světlé téma = teplý krémový
+# papír (base3), tmavé = base03. Volba: řádek "theme light|dark" v config.txt.
+# ============================================================================
+import tkinter.font as tkfont
+from types import SimpleNamespace
+
+BASE03, BASE02, BASE01, BASE00 = "#002b36", "#073642", "#586e75", "#657b83"
+BASE0, BASE1, BASE2, BASE3 = "#839496", "#93a1a1", "#eee8d5", "#fdf6e3"
+YELLOW, ORANGE, RED, MAGENTA = "#b58900", "#cb4b16", "#dc322f", "#d33682"
+VIOLET, BLUE, CYAN, GREEN = "#6c71c4", "#268bd2", "#2aa198", "#859900"
+
+
+def _hex_to_rgb(h):
+    h = h.lstrip("#")
+    return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
+
+
+def _mix(a, b, t):
+    """Lineární míchání dvou hex barev: t=0 → a, t=1 → b."""
+    ra, rb = _hex_to_rgb(a), _hex_to_rgb(b)
+    return "#%02x%02x%02x" % tuple(round(x + (y - x) * t) for x, y in zip(ra, rb))
+
+
+THEMES = {
+    "light": SimpleNamespace(
+        name="light",
+        canvas=BASE3, panel=BASE2, paper="#fffdf6", card=BASE3, cards_bg="#f3ecd6",
+        line="#e6dfc8", border="#d9d2bb",
+        text=BASE02, text2=BASE01, muted=BASE1, faint=BASE0,
+        accent=ORANGE, accent_fg=BASE3, accent_hover="#b3410f",
+        hover="#f5eedb", selection="#f6e3d6",
+        info_fg="#1c6fa8", danger_fg="#b8221f", success_fg="#667500",
+        success_dot=GREEN, danger_dot=RED,
+        danger_border=_mix(RED, "#fffdf6", 0.5),
+    ),
+    "dark": SimpleNamespace(
+        name="dark",
+        canvas=BASE03, panel=BASE02, paper="#0b3a47", card="#0b3a47", cards_bg=BASE03,
+        line="#12505f", border="#12505f",
+        text=BASE2, text2=BASE1, muted=BASE00, faint=BASE01,
+        accent=ORANGE, accent_fg=BASE3, accent_hover="#e0602a",
+        hover="#0d4352", selection="#1b4a58",
+        info_fg="#6cb6ea", danger_fg="#f0645f", success_fg="#b5c94a",
+        success_dot=GREEN, danger_dot=RED,
+        danger_border=_mix(RED, "#0b3a47", 0.35),
+    ),
+}
+DEFAULT_THEME = "light"
+
+# Písma (rodiny v pořadí preference – vybere se první nainstalovaná)
+UI_FAMILIES = ["Segoe UI", "Noto Sans", "DejaVu Sans"]
+TITLE_FAMILIES = ["Cambria", "Georgia", "Noto Serif", "DejaVu Serif"]
+MONO_FAMILIES = ["Cascadia Mono", "Consolas", "DejaVu Sans Mono"]
+# typografická škála (pt; Tk chce celá čísla → lead 11.5 → 12, h2 12.5 → 12)
+SIZE_CAPTION, SIZE_BODY, SIZE_LEAD, SIZE_H2, SIZE_H1, SIZE_DISPLAY = 8, 10, 12, 12, 16, 22
+SIZE_SEARCH = 14   # vyhledávací pole (mezi h2 a h1)
+SIZE_OSD = 24      # nápis skupiny na ploše
+
+# Rozměry
+SPACE_XS, SPACE_SM, SPACE_MD, SPACE_LG, SPACE_XL = 4, 8, 12, 16, 24
+ROW_HEIGHT = 30
+ICON_SIZE = 16
+ACCENT_BAR = 3     # pruh vlevo u vybrané položky seznamu (NavList vzor)
+
+# Technická „průhledná" barva OSD okna (-transparentcolor), není součást palety.
+OSD_TRANSPARENT = "#010101"
+
+# Ikona okna a dialogů: sada Terakota (c:\code\terakota-icons, windows/win-switcher-*.ico),
+# kopie v assets/. Světlé téma = espresso prstenec, tmavé = krémový.
+ICON_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
+ICON_FILES = {"light": "win-switcher-light.ico", "dark": "win-switcher-dark.ico"}
+
+_family_cache = {}
+
+
+def pick_family(candidates):
+    """První nainstalovaná rodina písma ze seznamu (vyžaduje existující Tk)."""
+    key = tuple(candidates)
+    if key not in _family_cache:
+        try:
+            installed = set(tkfont.families())
+        except Exception:
+            installed = set()
+        _family_cache[key] = next((f for f in candidates if f in installed), candidates[0])
+    return _family_cache[key]
+
+
+def draw_icon(canvas, kind, fg, size=ICON_SIZE):
+    """Tahová ikona na mřížce 16×16 (místo emoji), obarvená barvou textu."""
+    canvas.delete("all")
+    w = int(canvas.cget("width")); h = int(canvas.cget("height"))
+    ox, oy = (w - size) / 2, (h - size) / 2
+    s = size / 16.0
+    def P(x, y):
+        return (ox + x * s, oy + y * s)
+    lw = max(1.5, 1.5 * s)
+    if kind == "window":
+        canvas.create_rectangle(*P(2, 3), *P(14, 13), outline=fg, width=lw)
+        canvas.create_line(*P(2, 6), *P(14, 6), fill=fg, width=lw)
+    elif kind == "command":
+        canvas.create_line(*P(3, 4), *P(7, 8), *P(3, 12), fill=fg, width=lw,
+                           joinstyle="round", capstyle="round")
+        canvas.create_line(*P(8, 12.5), *P(13.5, 12.5), fill=fg, width=lw, capstyle="round")
+    elif kind == "anchor":
+        canvas.create_oval(*P(8 - 3.5, 3), *P(8 + 3.5, 10), outline=fg, width=lw)
+        canvas.create_line(*P(8, 10), *P(8, 14.5), fill=fg, width=lw, capstyle="round")
+        canvas.create_line(*P(5, 13), *P(11, 13), fill=fg, width=lw, capstyle="round")
+    elif kind == "plus":
+        canvas.create_line(*P(8, 3.5), *P(8, 12.5), fill=fg, width=lw, capstyle="round")
+        canvas.create_line(*P(3.5, 8), *P(12.5, 8), fill=fg, width=lw, capstyle="round")
+    elif kind == "check":
+        canvas.create_line(*P(3, 8.5), *P(6.5, 12), *P(13, 4.5), fill=fg, width=lw + 0.5,
+                           joinstyle="round", capstyle="round")
+
 # --- Windows API Constants & DLLs ---
 User32 = ctypes.windll.user32
 Kernel32 = ctypes.windll.kernel32
@@ -201,6 +318,27 @@ _IID_ITaskbarList  = _make_guid(0x56FDF342, 0xFD6D, 0x11D0, [0x95, 0x8A, 0x00, 0
 DwmApi.DwmRegisterThumbnail.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p)]
 DwmApi.DwmUpdateThumbnailProperties.argtypes = [ctypes.c_void_p, ctypes.POINTER(DWM_THUMBNAIL_PROPERTIES)]
 DwmApi.DwmUnregisterThumbnail.argtypes = [ctypes.c_void_p]
+DwmApi.DwmGetWindowAttribute.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p, ctypes.c_uint]
+DwmApi.DwmGetWindowAttribute.restype = ctypes.c_long
+DWMWA_EXTENDED_FRAME_BOUNDS = 9
+
+
+def visible_window_rect(hwnd):
+    """Rect VIDITELNÉHO rámu okna (bez neviditelného okraje pro změnu velikosti,
+    který GetWindowRect u oken s DWM rámem započítává – 7 až 10 px na každé
+    straně). DWM ho vrací ve fyzických pixelech; volat v _PhysicalDpi kontextu.
+    Při neúspěchu spadne na GetWindowRect."""
+    r = RECT()
+    try:
+        hr = DwmApi.DwmGetWindowAttribute(hwnd, DWMWA_EXTENDED_FRAME_BOUNDS,
+                                          ctypes.byref(r), ctypes.sizeof(r))
+        if hr == 0 and r.right > r.left and r.bottom > r.top:
+            return (r.left, r.top, r.right, r.bottom)
+    except Exception:
+        pass
+    if User32.GetWindowRect(hwnd, ctypes.byref(r)):
+        return (r.left, r.top, r.right, r.bottom)
+    return None
 
 GWL_EXSTYLE = -20
 WS_EX_TOOLWINDOW = 0x00000080
@@ -273,16 +411,18 @@ class WindowSwitcherApp:
         self.root.overrideredirect(True)  # Frameless window
         self.root.attributes("-topmost", True)
         
-        # Modern Dark Theme Colors
-        self.bg_color = "#1e1e24"
-        self.fg_color = "#e2e2e7"
-        self.accent_color = "#007acc"
-        self.list_bg = "#25252d"
-        self.list_sel_bg = "#2a5a8a"
-        self.list_sel_fg = "#ffffff"
-        self.footer_color = "#8a8a93"
-        
-        self.root.configure(bg=self.bg_color)
+        # Vzhled: tokeny Solarized (viz THEMES nahoře); přepíše load_config (theme ...)
+        self.theme_name = DEFAULT_THEME
+        self.t = THEMES[self.theme_name]
+        self.font_ui = (pick_family(UI_FAMILIES), SIZE_BODY)
+        self.font_caption = (pick_family(UI_FAMILIES), SIZE_CAPTION + 1)
+        self.font_lead = (pick_family(UI_FAMILIES), SIZE_LEAD)
+        self.font_search = (pick_family(UI_FAMILIES), SIZE_SEARCH)
+        # Patkové písmo je vyhrazené pro obsah uživatele (titulky oken)
+        self.font_title = (pick_family(TITLE_FAMILIES), SIZE_LEAD)
+        self.font_osd = (pick_family(TITLE_FAMILIES), SIZE_OSD, "bold")
+
+        self.root.configure(bg=self.t.canvas)
         
         # State variables
         self.is_visible = False
@@ -341,7 +481,6 @@ class WindowSwitcherApp:
         self._taskbar_vtable = None
         # Multi-select state (aaa / aai mode)
         self.multi_selected = set()        # set of indices in filtered_items
-        self.multi_sel_bg = "#1e3e5e"      # bg for multi-selected (not cursor) rows
         # Window anchoring (kkk / kka)
         self.anchored_hwnds = {}           # hwnd -> {"group_ctx": str|None, "global_anchor": bool}
         # Zapamatovaná přání ukotvení podle skupiny – při opuštění skupiny se kotva
@@ -365,6 +504,7 @@ class WindowSwitcherApp:
         
         # Load config
         self.load_config()
+        self._set_theme_tokens()
         self._init_taskbar_com()
         
         # Setup modern GUI layout
@@ -463,14 +603,14 @@ class WindowSwitcherApp:
             win = tk.Toplevel(self.root)
             win.overrideredirect(True)
             win.attributes("-topmost", True)
-            win.attributes("-transparentcolor", "#010101")
-            win.configure(bg="#010101")
+            win.attributes("-transparentcolor", OSD_TRANSPARENT)
+            win.configure(bg=OSD_TRANSPARENT)
             lbl = tk.Label(
                 win,
                 text="",
-                font=("Times New Roman", 24, "bold"),
-                bg="#010101",
-                fg="#a0a0a0",
+                font=self.font_osd,
+                bg=OSD_TRANSPARENT,
+                fg=self.t.accent,
                 bd=0,
                 relief="flat",
                 highlightthickness=0,
@@ -550,19 +690,24 @@ class WindowSwitcherApp:
 
     def _make_tray_image(self, group_name):
         """Vygeneruje 64x64 ikonku s názvem skupiny."""
-        img = Image.new("RGBA", (64, 64), (30, 30, 36, 255))
+        img = Image.new("RGBA", (64, 64), _hex_to_rgb(self.t.canvas) + (255,))
         draw = ImageDraw.Draw(img)
         label = group_name[2:].upper() if group_name.startswith("gg") else ("~" if not group_name else group_name[:4].upper())
         if not label:
             label = "≡"
-        try:
-            font = ImageFont.truetype("arialbd.ttf", 22)
-        except Exception:
+        font = None
+        for name in ("segoeuib.ttf", "arialbd.ttf"):
+            try:
+                font = ImageFont.truetype(name, 22)
+                break
+            except Exception:
+                continue
+        if font is None:
             font = ImageFont.load_default()
         bbox = draw.textbbox((0, 0), label, font=font)
         tw = bbox[2] - bbox[0]
         th = bbox[3] - bbox[1]
-        draw.text(((64 - tw) / 2 - bbox[0], (64 - th) / 2 - bbox[1]), label, font=font, fill=(0, 172, 255, 255))
+        draw.text(((64 - tw) / 2 - bbox[0], (64 - th) / 2 - bbox[1]), label, font=font, fill=_hex_to_rgb(self.t.accent) + (255,))
         return img
 
     def _run_tray(self):
@@ -590,6 +735,7 @@ class WindowSwitcherApp:
         self.show_list_thumbnails = True
         self.list_thumbnail_scale = 5.0 # default scale factor
         self.window_height = 680 # default height
+        self.theme_name = DEFAULT_THEME
         self.hotkey_modifier = 0x0008 # MOD_WIN (Win key)
         self.hotkey_vk = 0x09 # VK_TAB (Tab key)
         # Přímá zkratka pro ppp (vyzdvižení nad kotvy) – bez otevírání switcheru.
@@ -664,6 +810,11 @@ class WindowSwitcherApp:
                                 self.list_thumbnail_scale = float(line.split(None, 1)[1])
                             except Exception:
                                 self.list_thumbnail_scale = 5.0
+                            continue
+
+                        if line.startswith("theme "):
+                            val = line.split(None, 1)[1].strip().lower()
+                            self.theme_name = val if val in THEMES else DEFAULT_THEME
                             continue
 
                         if line.startswith("window_height "):
@@ -966,13 +1117,15 @@ class WindowSwitcherApp:
         self.load_config()
         self.clear_all_row_thumbnails()
         self.clear_thumbnail()
+        self._apply_theme()
         
         # Grid layout adjustments
         if not self.show_thumbnails:
             self.preview_canvas.pack_forget()
         else:
-            self.preview_canvas.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=5, pady=5)
-            
+            self.preview_canvas.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True,
+                                     padx=(0, SPACE_LG), pady=SPACE_SM)
+
         self.center_on_screen()
         self.on_text_changed()
         
@@ -980,52 +1133,140 @@ class WindowSwitcherApp:
         self.status_label.config(text=status_text)
         self.root.after(2000, lambda: self.status_label.config(text="Ctrl+R: Načíst config | Ctrl+Q: Ukončit | Esc: Zavřít"))
 
+    def _set_theme_tokens(self):
+        """Nastaví tokeny podle self.theme_name, pozadí root okna a ikonu okna
+        (iconbitmap default = platí i pro všechny dialogy)."""
+        self.t = t = THEMES.get(self.theme_name, THEMES[DEFAULT_THEME])
+        self.root.configure(bg=t.canvas)
+        ico = os.path.join(ICON_DIR, ICON_FILES.get(t.name, ICON_FILES[DEFAULT_THEME]))
+        if os.path.exists(ico):
+            try:
+                self.root.iconbitmap(default=ico)
+            except Exception as e:
+                print(f"Ikonu okna se nepodařilo nastavit: {e}")
+
+    def _apply_theme(self):
+        """Přebarví trvalé widgety podle self.theme_name (načteno z configu) a
+        znovu vykreslí řádky. Obdoba theme.apply + widgets.retheme_tree v solarqt."""
+        self._set_theme_tokens()
+        t = self.t
+        self.main_frame.config(bg=t.canvas, highlightbackground=t.border, highlightcolor=t.border)
+        self.entry_container.config(bg=t.canvas)
+        self.entry.config(bg=t.paper, fg=t.text, insertbackground=t.text,
+                          highlightbackground=t.border, highlightcolor=t.accent,
+                          selectbackground=t.selection, selectforeground=t.text)
+        self.content_frame.config(bg=t.canvas)
+        self.list_cnt.config(bg=t.canvas)
+        self.list_canvas.config(bg=t.card, highlightbackground=t.line, highlightcolor=t.line)
+        self.scroll_rows_frame.config(bg=t.card)
+        self.preview_canvas.config(bg=t.card, highlightbackground=t.line, highlightcolor=t.line)
+        self.footer_line.config(bg=t.line)
+        self.status_label.config(bg=t.panel, fg=t.muted)
+        for osd in getattr(self, "osd_windows", []):
+            try:
+                osd["label"].config(fg=t.accent)
+            except Exception:
+                pass
+        if hasattr(self, "filtered_items"):
+            self.render_rows()
+
+    def _make_icon(self, parent, kind, bg, fg, size=ICON_SIZE + 4):
+        """Canvas s tahovou ikonou; kind se pamatuje pro překreslení."""
+        c = tk.Canvas(parent, width=size, height=size, bg=bg, bd=0, highlightthickness=0)
+        c.icon_kind = kind
+        draw_icon(c, kind, fg)
+        return c
+
+    def _styled_button(self, parent, text, command, kind="default", width=None):
+        """Tlačítko ve stylu solarqt: default (papír + okraj), primary (akcent,
+        jen jedno na dialog), danger (obrys červeně), quiet (bez rámečku).
+        Okraj kreslí obalový rámeček btn.outer (Tk na Windows highlight ring
+        u tlačítek bez fokusu nevykreslí) – do gridu se vkládá btn.outer.
+        Fokus z klávesnice = akcentový rámeček (highlightcolor)."""
+        t = self.t
+        bg, fg, active_bg, active_fg, border, focus = (
+            t.paper, t.text, t.hover, t.text, t.border, t.accent)
+        if kind == "primary":
+            bg, fg, active_bg, active_fg, border, focus = (
+                t.accent, t.accent_fg, t.accent_hover, t.accent_fg, t.accent, t.text)
+        elif kind == "danger":
+            bg, fg, active_bg, active_fg, border = (
+                t.canvas, t.danger_fg, t.danger_dot, t.accent_fg, t.danger_border)
+        elif kind == "quiet":
+            bg, fg, border = t.canvas, t.text2, t.canvas
+        outer = tk.Frame(parent, bg=border, padx=1, pady=1)
+        btn = tk.Button(outer, text=text, command=command, font=self.font_ui,
+                        bg=bg, fg=fg, activebackground=active_bg, activeforeground=active_fg,
+                        relief="flat", bd=0, highlightthickness=1,
+                        highlightbackground=bg, highlightcolor=focus,
+                        padx=SPACE_MD, pady=5, cursor="hand2")
+        if width is not None:
+            btn.config(width=width)
+        btn.pack(fill=tk.BOTH, expand=True)
+        btn.outer = outer
+        return btn
+
+    def _style_dialog(self, dlg, message):
+        """Dialog na plátně: text + rámeček pro tlačítka. Vrací btn_frame."""
+        t = self.t
+        dlg.configure(bg=t.canvas)
+        tk.Label(dlg, text=message, justify="left", padx=SPACE_XL, pady=SPACE_LG,
+                 wraplength=420, bg=t.canvas, fg=t.text, font=self.font_ui).pack(anchor="w")
+        btn_frame = tk.Frame(dlg, padx=SPACE_LG, pady=SPACE_MD, bg=t.canvas)
+        btn_frame.pack()
+        return btn_frame
+
     def setup_ui(self):
-        # Outer border frame
-        self.main_frame = tk.Frame(self.root, bg=self.bg_color, bd=2, highlightbackground=self.accent_color, highlightthickness=1)
+        t = self.t
+        # Vnější rámeček: plátno + jemná linka okraje (žádný stín, žádný akcent)
+        self.main_frame = tk.Frame(self.root, bg=t.canvas, bd=0,
+                                   highlightbackground=t.border, highlightthickness=1)
         self.main_frame.pack(fill=tk.BOTH, expand=True)
-        
-        # Search Entry Container
-        entry_container = tk.Frame(self.main_frame, bg=self.bg_color, padx=10, pady=10)
-        entry_container.pack(fill=tk.X)
-        
-        # Search Entry
+
+        # Vyhledávací pole
+        self.entry_container = tk.Frame(self.main_frame, bg=t.canvas,
+                                        padx=SPACE_LG, pady=SPACE_MD)
+        self.entry_container.pack(fill=tk.X, pady=(SPACE_XS, 0))
+
         self.entry_var = tk.StringVar()
         self.entry_var.trace_add("write", lambda *args: self.on_text_changed())
-        
+
         self.entry = tk.Entry(
-            entry_container,
+            self.entry_container,
             textvariable=self.entry_var,
-            font=("Segoe UI", 14),
-            bg=self.list_bg,
-            fg=self.fg_color,
-            insertbackground=self.fg_color,
+            font=self.font_search,
+            bg=t.paper,
+            fg=t.text,
+            insertbackground=t.text,
+            selectbackground=t.selection,
+            selectforeground=t.text,
             bd=0,
             highlightthickness=1,
-            highlightbackground="#3e3e4a",
-            highlightcolor=self.accent_color
+            highlightbackground=t.border,
+            highlightcolor=t.accent
         )
-        self.entry.pack(fill=tk.X, ipady=8, pady=2)
-        
-        # Main content layout (Left side scrollable frame, Right side big preview)
-        self.content_frame = tk.Frame(self.main_frame, bg=self.bg_color)
+        self.entry.pack(fill=tk.X, ipady=6, ipadx=SPACE_SM)
+
+        # Obsah: vlevo posuvný seznam, vpravo velký náhled
+        self.content_frame = tk.Frame(self.main_frame, bg=t.canvas)
         self.content_frame.pack(fill=tk.BOTH, expand=True)
-        
-        # Custom Scrollable List Container (replaces Tkinter's Listbox)
-        self.list_cnt = tk.Frame(self.content_frame, bg=self.bg_color, padx=10, pady=5)
+
+        # Seznam (karta: pozadí card, okraj line)
+        self.list_cnt = tk.Frame(self.content_frame, bg=t.canvas, padx=SPACE_LG, pady=SPACE_SM)
         self.list_cnt.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        
+
         self.list_scrollbar = tk.Scrollbar(self.list_cnt, orient=tk.VERTICAL)
         self.list_canvas = tk.Canvas(
             self.list_cnt,
-            bg=self.list_bg,
+            bg=t.card,
             bd=0,
-            highlightthickness=0,
+            highlightthickness=1,
+            highlightbackground=t.line,
             yscrollcommand=self.on_canvas_scroll
         )
         self.list_scrollbar.config(command=self.list_canvas.yview)
-        
-        self.scroll_rows_frame = tk.Frame(self.list_canvas, bg=self.list_bg)
+
+        self.scroll_rows_frame = tk.Frame(self.list_canvas, bg=t.card)
         self.scroll_window_id = self.list_canvas.create_window((0, 0), window=self.scroll_rows_frame, anchor="nw")
         
         self.scroll_rows_frame.bind("<Configure>", lambda e: self.list_canvas.config(scrollregion=self.list_canvas.bbox("all")))
@@ -1034,28 +1275,32 @@ class WindowSwitcherApp:
         self.list_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.list_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         
-        # Live Windows DWM Preview Canvas (Right side)
+        # Velký živý DWM náhled (vpravo)
         self.preview_canvas = tk.Canvas(
             self.content_frame,
-            bg=self.list_bg,
-            bd=1,
-            highlightthickness=0
+            bg=t.card,
+            bd=0,
+            highlightthickness=1,
+            highlightbackground=t.line
         )
         if self.show_thumbnails:
-            self.preview_canvas.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=5, pady=5)
-            
-        # Footer Help Text
+            self.preview_canvas.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True,
+                                     padx=(0, SPACE_LG), pady=SPACE_SM)
+
+        # Stavový řádek (panel s linkou nahoře, popisek barvou muted)
         self.status_label = tk.Label(
             self.main_frame,
             text="Ctrl+R: Načíst config | Ctrl+Q: Ukončit | Esc: Zavřít",
-            font=("Segoe UI", 9),
-            bg=self.bg_color,
-            fg=self.footer_color,
+            font=self.font_caption,
+            bg=t.panel,
+            fg=t.muted,
             anchor="w",
-            padx=10,
-            pady=5
+            padx=SPACE_LG,
+            pady=6
         )
         self.status_label.pack(side=tk.BOTTOM, fill=tk.X)
+        self.footer_line = tk.Frame(self.main_frame, bg=t.line, height=1)
+        self.footer_line.pack(side=tk.BOTTOM, fill=tk.X)
         
         self.root.bind("<Escape>", lambda e: self.hide_switcher())
         self.root.bind("<Control-q>", lambda e: self.quit_app())
@@ -1316,7 +1561,7 @@ class WindowSwitcherApp:
                 cur_hwnd = self.prev_active_hwnd
                 cur_title = self.prev_active_title or "Neznámé"
                 is_anchored = cur_hwnd and cur_hwnd in self.anchored_hwnds
-                label = "📌 [Odkotvit okno]" if is_anchored else "📌 [Ukotvit okno]"
+                label = "[Odkotvit okno]" if is_anchored else "[Ukotvit okno]"
                 self.filtered_items.append({
                     "type": "anchor_window",
                     "group_ctx": group_name,
@@ -1396,7 +1641,7 @@ class WindowSwitcherApp:
             cur_hwnd = self.prev_active_hwnd
             cur_title = self.prev_active_title or "Neznámé"
             is_anchored = cur_hwnd and cur_hwnd in self.anchored_hwnds
-            label = "📌 [Odkotvit okno]" if is_anchored else "📌 [Ukotvit okno]"
+            label = "[Odkotvit okno]" if is_anchored else "[Ukotvit okno]"
             self.filtered_items.append({
                 "type": "anchor_window",
                 "group_ctx": "",
@@ -1407,7 +1652,7 @@ class WindowSwitcherApp:
             cur_hwnd = self.prev_active_hwnd
             cur_title = self.prev_active_title or "Neznámé"
             is_anchored = cur_hwnd and cur_hwnd in self.anchored_hwnds
-            label = "📌 [Odkotvit okno]" if is_anchored else "📌 [Ukotvit okno (globálně)]"
+            label = "[Odkotvit okno]" if is_anchored else "[Ukotvit okno (globálně)]"
             self.filtered_items.append({
                 "type": "anchor_window",
                 "group_ctx": None,
@@ -1459,13 +1704,13 @@ class WindowSwitcherApp:
                         self.filtered_items.append({
                             "type": "window",
                             "hwnd": win["hwnd"],
-                            "title": f"⭐ [Aktivní okno] -> {win['title']}"
+                            "title": f"[Aktivní okno] -> {win['title']}"
                         })
                 else:
                     self.filtered_items.append({
                         "type": "command",
                         "command": command,
-                        "title": f"🚀 [Spustit] -> {command}"
+                        "title": f"[Spustit] -> {command}"
                     })
             else:
                 windows_not_in_any_group = []
@@ -1513,12 +1758,14 @@ class WindowSwitcherApp:
         self.render_rows()
 
     def _row_colors(self, idx):
-        """Vrátí (bg, fg) pro řádek podle stavu kurzoru / multi-výběru."""
+        """Vrátí (bg, fg, bar) pro řádek: kurzor = podbarvení selection + akcentový
+        pruh vlevo (text zůstává text, ne bílý); multi-výběr = hover + zelený pruh."""
+        t = self.t
         if idx == self.selected_index:
-            return self.list_sel_bg, self.list_sel_fg
+            return t.selection, t.text, t.accent
         if idx in self.multi_selected:
-            return self.multi_sel_bg, "#cce4ff"
-        return self.list_bg, self.fg_color
+            return t.hover, t.text, t.success_dot
+        return t.card, t.text, t.card
 
     def _cancel_pending_thumbnails(self):
         for aid in self._pending_thumb_after_ids:
@@ -1539,10 +1786,10 @@ class WindowSwitcherApp:
             lbl = tk.Label(
                 self.scroll_rows_frame,
                 text="Žádná okna nenalezena",
-                font=("Segoe UI", 11),
-                bg=self.list_bg,
-                fg=self.footer_color,
-                pady=20
+                font=self.font_lead,
+                bg=self.t.card,
+                fg=self.t.muted,
+                pady=SPACE_XL
             )
             lbl.pack(fill=tk.X)
             self.clear_thumbnail()
@@ -1551,12 +1798,16 @@ class WindowSwitcherApp:
         for idx, item in enumerate(self.filtered_items):
             is_selected = (idx == self.selected_index)
             is_multi = (idx in self.multi_selected)
-            bg, fg = self._row_colors(idx)
+            bg, fg, bar = self._row_colors(idx)
 
-            row_frame = tk.Frame(self.scroll_rows_frame, bg=bg, bd=0, padx=5, pady=4)
+            row_frame = tk.Frame(self.scroll_rows_frame, bg=bg, bd=0, padx=SPACE_XS, pady=SPACE_XS)
             row_frame.pack(fill=tk.X, expand=True)
 
             row_frame.bind("<Button-1>", lambda e, idx=idx: self._on_row_click(idx))
+
+            # Akcentový pruh vlevo (viditelný jen u kurzoru / multi-výběru)
+            bar_frame = tk.Frame(row_frame, bg=bar, width=ACCENT_BAR)
+            bar_frame.pack(side=tk.LEFT, fill=tk.Y, padx=(0, SPACE_XS))
 
             icon_lbl = None
             if self.show_list_thumbnails and item["type"] == "window":
@@ -1569,58 +1820,58 @@ class WindowSwitcherApp:
                     row_frame,
                     width=thumb_w,
                     height=thumb_h,
-                    bg="#000000",
-                    bd=1,
+                    bg=self.t.cards_bg,
+                    bd=0,
                     highlightthickness=1,
-                    highlightbackground="#4e4e5a"
+                    highlightbackground=self.t.line
                 )
-                mini_canvas.pack(side=tk.LEFT, padx=(5, 10))
+                mini_canvas.pack(side=tk.LEFT, padx=(SPACE_XS, SPACE_MD))
                 mini_canvas.bind("<Button-1>", lambda e, idx=idx: self._on_row_click(idx))
 
                 # Thumbnaily renderuj až 150ms po zastavení psaní (přeskočí zbytečné registrace DWM při psaní)
                 aid = self.root.after(150, lambda mc=mini_canvas, hwnd=item["hwnd"]: self.render_row_thumbnail(mc, hwnd))
                 self._pending_thumb_after_ids.append(aid)
             else:
+                # Tahová ikona (ne emoji), barvou text2; ✓ u multi-výběru zeleně
                 if item["type"] == "command":
-                    icon_text = "🚀"
+                    kind = "command"
                 elif item.get("aaa_mode") or item.get("aai_mode"):
-                    icon_text = "+" if not is_multi else "✓"
+                    kind = "check" if is_multi else "plus"
                 elif item["type"] == "anchor_window":
-                    icon_text = "📌"
+                    kind = "anchor"
                 else:
-                    icon_text = "🪟"
-                icon_lbl = tk.Label(
-                    row_frame,
-                    text=icon_text,
-                    font=("Segoe UI", 11),
-                    bg=bg,
-                    fg=fg,
-                    width=4
-                )
-                icon_lbl.pack(side=tk.LEFT, padx=(5, 10))
+                    kind = "window"
+                icon_fg = self.t.success_fg if kind == "check" else self.t.text2
+                icon_lbl = self._make_icon(row_frame, kind, bg, icon_fg)
+                icon_lbl.pack(side=tk.LEFT, padx=(SPACE_SM, SPACE_MD))
                 icon_lbl.bind("<Button-1>", lambda e, idx=idx: self._on_row_click(idx))
 
-            # Build display title (prepend 📌 for anchored windows in normal mode)
-            display_title = item["title"]
+            # Ukotvené okno v běžném režimu: malá ikona kotvy před titulkem
+            pin_lbl = None
             if item["type"] == "window" and item.get("hwnd") and item["hwnd"] in self.anchored_hwnds:
                 if not item.get("aaa_mode") and not item.get("aai_mode"):
-                    display_title = "📌 " + display_title
+                    pin_lbl = self._make_icon(row_frame, "anchor", bg, self.t.info_fg, size=ICON_SIZE)
+                    pin_lbl.pack(side=tk.LEFT, padx=(0, SPACE_XS))
+                    pin_lbl.bind("<Button-1>", lambda e, idx=idx: self._on_row_click(idx))
 
             title_lbl = tk.Label(
                 row_frame,
-                text=display_title,
-                font=("Segoe UI", 11, "bold" if is_selected else "normal"),
+                text=item["title"],
+                font=self.font_title,
                 bg=bg,
                 fg=fg,
                 anchor="w",
-                justify="left"
+                justify="left",
+                pady=2
             )
             title_lbl.pack(side=tk.LEFT, fill=tk.X, expand=True)
             title_lbl.bind("<Button-1>", lambda e, idx=idx: self._on_row_click(idx))
 
             self._row_widgets.append({
                 "frame": row_frame,
+                "bar": bar_frame,
                 "icon": icon_lbl,
+                "pin": pin_lbl,
                 "title": title_lbl,
                 "item": item,
             })
@@ -1638,16 +1889,22 @@ class WindowSwitcherApp:
         for idx, rw in enumerate(self._row_widgets):
             is_selected = (idx == self.selected_index)
             is_multi = (idx in self.multi_selected)
-            bg, fg = self._row_colors(idx)
+            bg, fg, bar = self._row_colors(idx)
             try:
                 rw["frame"].config(bg=bg)
+                rw["bar"].config(bg=bar)
                 if rw["icon"] is not None:
                     item = rw["item"]
+                    icon = rw["icon"]
                     if item.get("aaa_mode") or item.get("aai_mode"):
-                        rw["icon"].config(text="✓" if is_multi else "+")
-                    rw["icon"].config(bg=bg, fg=fg)
-                rw["title"].config(bg=bg, fg=fg,
-                                   font=("Segoe UI", 11, "bold" if is_selected else "normal"))
+                        icon.icon_kind = "check" if is_multi else "plus"
+                    icon_fg = self.t.success_fg if icon.icon_kind == "check" else self.t.text2
+                    icon.config(bg=bg)
+                    draw_icon(icon, icon.icon_kind, icon_fg)
+                if rw["pin"] is not None:
+                    rw["pin"].config(bg=bg)
+                    draw_icon(rw["pin"], "anchor", self.t.info_fg)
+                rw["title"].config(bg=bg, fg=fg)
             except Exception:
                 # Widget mezitím zanikl → kompletní render
                 self.render_rows()
@@ -1786,7 +2043,7 @@ class WindowSwitcherApp:
                 
                 DwmApi.DwmUpdateThumbnailProperties(thumb_handle, ctypes.byref(props))
             else:
-                canvas.config(bg="#31313a")
+                canvas.config(bg=self.t.panel)
         except Exception as e:
             print(f"Chyba vykreslení řádkového náhledu: {e}")
 
@@ -1823,9 +2080,9 @@ class WindowSwitcherApp:
             self.clear_thumbnail()
             self.preview_canvas.create_text(
                 150, 150,
-                text="🚀 Příkaz ke spuštění\n(Nemá náhled)",
-                fill=self.footer_color,
-                font=("Segoe UI", 11),
+                text="Příkaz ke spuštění\n(nemá náhled)",
+                fill=self.t.muted,
+                font=self.font_lead,
                 justify="center"
             )
             return
@@ -1879,9 +2136,9 @@ class WindowSwitcherApp:
             else:
                 self.preview_canvas.create_text(
                     150, 150,
-                    text="❌ Náhled nedostupný",
-                    fill=self.footer_color,
-                    font=("Segoe UI", 11)
+                    text="Náhled nedostupný",
+                    fill=self.t.muted,
+                    font=self.font_lead
                 )
         except Exception as e:
             print(f"Chyba vykreslení bočního náhledu: {e}")
@@ -2016,20 +2273,16 @@ class WindowSwitcherApp:
         dlg.attributes("-topmost", True)
 
         short_title = (win_title[:80] + "…") if len(win_title) > 80 else win_title
-        tk.Label(dlg, text=f"Opravdu zavřít okno?\n\n{short_title}",
-                 justify="left", padx=16, pady=12, wraplength=420).pack()
-
-        btn_frame = tk.Frame(dlg, padx=12, pady=8)
-        btn_frame.pack()
+        btn_frame = self._style_dialog(dlg, f"Opravdu zavřít okno?\n\n{short_title}")
 
         def pick(val):
             result[0] = val
             dlg.destroy()
 
-        btn_yes = tk.Button(btn_frame, text="Zavřít", width=14, command=lambda: pick(True))
-        btn_no  = tk.Button(btn_frame, text="Zrušit", width=14, command=lambda: pick(False))
-        btn_yes.grid(row=0, column=0, padx=4, pady=2)
-        btn_no.grid (row=0, column=1, padx=4, pady=2)
+        btn_yes = self._styled_button(btn_frame, "Zavřít", lambda: pick(True), kind="danger", width=14)
+        btn_no  = self._styled_button(btn_frame, "Zrušit", lambda: pick(False), kind="quiet", width=14)
+        btn_yes.outer.grid(row=0, column=0, padx=4, pady=2)
+        btn_no.outer.grid (row=0, column=1, padx=4, pady=2)
 
         for btn, other in [(btn_yes, btn_no), (btn_no, btn_yes)]:
             btn.bind("<Left>",   lambda e, o=other: (o.focus_set(), "break")[1])
@@ -2061,21 +2314,18 @@ class WindowSwitcherApp:
         dlg.attributes("-topmost", True)
 
         short_title = (win_title[:80] + "…") if len(win_title) > 80 else win_title
-        tk.Label(dlg, text=short_title, justify="left", padx=16, pady=12, wraplength=420).pack()
-
-        btn_frame = tk.Frame(dlg, padx=12, pady=8)
-        btn_frame.pack()
+        btn_frame = self._style_dialog(dlg, short_title)
 
         def pick(val):
             result[0] = val
             dlg.destroy()
 
-        btn_close  = tk.Button(btn_frame, text="Zavřít okno",        width=22, command=lambda: pick("close"))
-        btn_remove = tk.Button(btn_frame, text="Vyjmout ze skupiny", width=22, command=lambda: pick("remove"))
-        btn_cancel = tk.Button(btn_frame, text="Zrušit",              width=22, command=lambda: pick("cancel"))
-        btn_close.grid (row=0, column=0, padx=4, pady=2)
-        btn_remove.grid(row=1, column=0, padx=4, pady=2)
-        btn_cancel.grid(row=2, column=0, padx=4, pady=2)
+        btn_close  = self._styled_button(btn_frame, "Zavřít okno",        lambda: pick("close"),  kind="danger", width=22)
+        btn_remove = self._styled_button(btn_frame, "Vyjmout ze skupiny", lambda: pick("remove"), width=22)
+        btn_cancel = self._styled_button(btn_frame, "Zrušit",             lambda: pick("cancel"), kind="quiet", width=22)
+        btn_close.outer.grid (row=0, column=0, padx=4, pady=2)
+        btn_remove.outer.grid(row=1, column=0, padx=4, pady=2)
+        btn_cancel.outer.grid(row=2, column=0, padx=4, pady=2)
 
         btns = [btn_close, btn_remove, btn_cancel]
         for i, btn in enumerate(btns):
@@ -2198,10 +2448,7 @@ class WindowSwitcherApp:
         dlg.grab_set()
         dlg.attributes("-topmost", True)
 
-        tk.Label(dlg, text=message, justify="left", padx=16, pady=12, wraplength=420).pack()
-
-        btn_frame = tk.Frame(dlg, padx=12, pady=8)
-        btn_frame.pack()
+        btn_frame = self._style_dialog(dlg, message)
 
         def pick(val):
             result[0] = val
@@ -2212,21 +2459,22 @@ class WindowSwitcherApp:
         #   Row 1: [Ano] [Ano dočasně]
         #   Row 2: [Vždy] [Vždy do přepnutí]
         #   Row 3: [Ne - zůstat] [Ne - opustit skupinu]
-        btn_zavrit = tk.Button(btn_frame, text="Zavřít okno",           width=18, command=lambda: pick("close"))
-        btn_ano    = tk.Button(btn_frame, text="Ano",                    width=18, command=lambda: pick("yes"))
-        btn_anot   = tk.Button(btn_frame, text="Ano dočasně",            width=18, command=lambda: pick("yes_temp"))
-        btn_vzdy   = tk.Button(btn_frame, text="Vždy",                   width=18, command=lambda: pick("always"))
-        btn_vpre   = tk.Button(btn_frame, text="Vždy do přepnutí",       width=18, command=lambda: pick("always_until_switch"))
-        btn_nz     = tk.Button(btn_frame, text="Ne - zůstat",             width=18, command=lambda: pick("no"))
-        btn_nl     = tk.Button(btn_frame, text="Ne - opustit skupinu",    width=18, command=lambda: pick("no_leave"))
+        # Jedna primární akce (Ano), Zavřít okno = destruktivní obrys, Ne… = tiché
+        btn_zavrit = self._styled_button(btn_frame, "Zavřít okno",          lambda: pick("close"),               kind="danger",  width=18)
+        btn_ano    = self._styled_button(btn_frame, "Ano",                  lambda: pick("yes"),                 kind="primary", width=18)
+        btn_anot   = self._styled_button(btn_frame, "Ano dočasně",          lambda: pick("yes_temp"),            width=18)
+        btn_vzdy   = self._styled_button(btn_frame, "Vždy",                 lambda: pick("always"),              width=18)
+        btn_vpre   = self._styled_button(btn_frame, "Vždy do přepnutí",     lambda: pick("always_until_switch"), width=18)
+        btn_nz     = self._styled_button(btn_frame, "Ne - zůstat",          lambda: pick("no"),                  kind="quiet",   width=18)
+        btn_nl     = self._styled_button(btn_frame, "Ne - opustit skupinu", lambda: pick("no_leave"),            kind="quiet",   width=18)
 
-        btn_zavrit.grid(row=0, column=0, columnspan=2, padx=4, pady=2)
-        btn_ano.grid   (row=1, column=0,               padx=4, pady=2)
-        btn_anot.grid  (row=1, column=1,               padx=4, pady=2)
-        btn_vzdy.grid  (row=2, column=0,               padx=4, pady=2)
-        btn_vpre.grid  (row=2, column=1,               padx=4, pady=2)
-        btn_nz.grid    (row=3, column=0,               padx=4, pady=2)
-        btn_nl.grid    (row=3, column=1,               padx=4, pady=2)
+        btn_zavrit.outer.grid(row=0, column=0, columnspan=2, padx=4, pady=2)
+        btn_ano.outer.grid   (row=1, column=0,               padx=4, pady=2)
+        btn_anot.outer.grid  (row=1, column=1,               padx=4, pady=2)
+        btn_vzdy.outer.grid  (row=2, column=0,               padx=4, pady=2)
+        btn_vpre.outer.grid  (row=2, column=1,               padx=4, pady=2)
+        btn_nz.outer.grid    (row=3, column=0,               padx=4, pady=2)
+        btn_nl.outer.grid    (row=3, column=1,               padx=4, pady=2)
 
         btns = [btn_zavrit, btn_ano, btn_anot, btn_vzdy, btn_vpre, btn_nz, btn_nl]
         positions = [(0, 0), (1, 0), (1, 1), (2, 0), (2, 1), (3, 0), (3, 1)]
@@ -3157,9 +3405,11 @@ class WindowSwitcherApp:
         with _PhysicalDpi():
             User32.EnumDisplayMonitors(None, None, MonitorEnumProc(_mon_cb), 0)
             for hwnd_a in list(self.anchored_hwnds.keys()):
-                pr = RECT()
-                if User32.GetWindowRect(hwnd_a, ctypes.byref(pr)):
-                    anchor_phys_rects[hwnd_a] = (pr.left, pr.top, pr.right, pr.bottom)
+                # Viditelný rám (bez neviditelného okraje) – jinak by rezervovaný
+                # pruh přesahoval kotvu a vedle ní zůstávala mezera ~7–10 px.
+                vr = visible_window_rect(hwnd_a)
+                if vr:
+                    anchor_phys_rects[hwnd_a] = vr
 
         for hMon, mx1, my1, mx2, my2 in monitor_rects:
             # For each edge, track the maximum intrusion of anchors on that edge.

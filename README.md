@@ -28,6 +28,7 @@ spolehlivost.
 - [Skrývání ikon na hlavním panelu a v Alt+Tab](#-skrývání-ikon-na-hlavním-panelu-a-v-alttab)
 - [Náhledy oken](#-náhledy-oken)
 - [OSD a ikona v oznamovací oblasti](#-osd-a-ikona-v-oznamovací-oblasti)
+- [Vzhled](#-vzhled)
 - [Parametry příkazové řádky](#-parametry-příkazové-řádky)
 - [Soubory aplikace](#-soubory-aplikace)
 
@@ -99,8 +100,8 @@ pořadí **záložní zkratky**:
 3. **Vyberte** položku šipkami a stiskněte **Enter** pro přepnutí na okno.
 4. **Zkratky a vzory:** napíšete-li definovanou zkratku (např. `vn`):
    - aplikace vyhledá okno odpovídající regulárnímu výrazu (např. `.*notes.*`);
-   - pokud okno **existuje**, nabídne `⭐ [Aktivní okno] -> …`;
-   - pokud **neexistuje**, nabídne `🚀 [Spustit] -> code -n c:/notes`.
+   - pokud okno **existuje**, nabídne `[Aktivní okno] -> …`;
+   - pokud **neexistuje**, nabídne `[Spustit] -> code -n c:/notes`.
 
 ---
 
@@ -146,6 +147,7 @@ za běhu načíst klávesou **Ctrl + R**.
 | `show_list_thumbnails` | `true` / `false` | `true` | Malé **živé náhledy přímo v řádcích** seznamu. |
 | `list_thumbnail_scale` | desetinné číslo | `5.0` | Měřítko malých náhledů (základ 48×30 px × měřítko). |
 | `window_height` | celé číslo (px) | `680` | Výška okna přepínače. |
+| `theme` | `light` / `dark` | `light` | Barevné téma (paleta Solarized, viz [Vzhled](#-vzhled)). |
 | `new_window_action` | `never`, `ask`, `always`, `leave` | `never` | Co se stane s nově vzniklým oknem, je-li aktivní skupina. |
 | `new_window_auto_yes` | regulární výraz | – | **Ano** – okno se automaticky přidá do skupiny (natrvalo). |
 | `new_window_auto_yes_temp` | regulární výraz | – | **Ano dočasně** – okno je ve skupině jen dokud je aktivní (neukládá se). |
@@ -397,6 +399,22 @@ příštím startu).
 
 ---
 
+## 🎨 Vzhled
+
+Vzhled vychází z manuálu **solarqt** (`c:\code\solarqt`, `MANUAL.md`): paleta **Solarized**
+ve světlé (teplý krémový papír) i tmavé variantě, jemné linky místo stínů, oranžová jen jako
+akcent (kurzor v seznamu, fokus pole, primární tlačítko), zelená pro multi-výběr, červený
+obrys pro destruktivní akce. Titulky oken jsou patkovým písmem (Cambria), ovládání bezpatkovým
+(Segoe UI); ikony v seznamu jsou kreslené tahové (ne emoji).
+
+- Téma volí řádek `theme light` / `theme dark` v `config.txt`, změna se projeví po **Ctrl + R**.
+- Ikona okna a dialogů je ze sady **Terakota** (`c:\code\terakota-icons`, `windows/win-switcher-*.ico`);
+  podle tématu se použije světlá nebo tmavá varianta.
+- Všechny barvy jsou na jednom místě v `win_switcher.pyw` (blok `THEMES` na začátku souboru);
+  zbytek kódu se na ně jen ptá přes `self.t.<token>`.
+
+---
+
 ## 🏳️ Parametry příkazové řádky
 
 | Parametr | Popis |
@@ -418,3 +436,4 @@ pythonw.exe win_switcher.pyw --keep-groups
 | `config.txt` | Nastavení a zkratky (vytvoří se automaticky, nečte-li se). |
 | `groups.json` | Uložené skupiny a rozložení (pohledy). Při poškození se zazálohuje do `groups.json.bak`. |
 | `start_switcher.bat` | Pohodlné spuštění / restart přepínače na pozadí. |
+| `assets/win-switcher-*.ico` | Ikona okna a dialogů (světlá / tmavá varianta) ze sady [Terakota](../terakota-icons). |

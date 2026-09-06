@@ -21,6 +21,9 @@ list_thumbnail_scale 5.0
 # Výška okna přepínače
 window_height 680
 
+# Vzhled: paleta Solarized (podle c:\code\solarqt) – light (krémový papír) / dark
+theme light
+
 # Globální aktivační klávesová zkratka (např. win+tab, alt+caps, atd.)
 # POZOR: Win+Tab je v systému Windows nativně rezervován pro Task View.
 # Pokud registrace Win+Tab selže, přepínač automaticky použije bezpečný fallback.
