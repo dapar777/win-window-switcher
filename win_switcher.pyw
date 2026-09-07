@@ -515,6 +515,9 @@ class WindowSwitcherApp:
         self.root.bind("<<PppHotkey>>", lambda e: self.on_ppp_hotkey_pressed())
         self.root.bind("<FocusOut>", lambda e: self.hide_switcher_on_focus_loss())
         
+        # WM_CLOSE na hlavní okno (stop_switcher.bat) = čisté ukončení jako Ctrl+Q
+        self.root.protocol("WM_DELETE_WINDOW", self.quit_app)
+
         # Hide initially
         self.root.withdraw()
         

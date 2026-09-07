@@ -71,6 +71,11 @@ které mají v příkazové řádce `win_switcher.pyw` – jiné aplikace v Pyth
 start_switcher.bat
 ```
 
+K ukončení slouží **`stop_switcher.bat`**: pošle přepínači žádost o zavření, takže skončí
+čistě (zruší pruhy kotev a TOPMOST ukotvených oken, obnoví ikony na hlavním panelu, sundá
+ikonu z oznamovací oblasti). Neodpoví-li do 5 s, ukončí proces natvrdo. Totéž udělá
+**Ctrl + Q** v otevřeném přepínači nebo položka **Ukončit** v nabídce ikony.
+
 Aplikace zůstane běžet na pozadí a čeká na stisk globální klávesové zkratky. V oznamovací
 oblasti se objeví ikona přepínače.
 
@@ -436,4 +441,6 @@ pythonw.exe win_switcher.pyw --keep-groups
 | `config.txt` | Nastavení a zkratky (vytvoří se automaticky, nečte-li se). |
 | `groups.json` | Uložené skupiny a rozložení (pohledy). Při poškození se zazálohuje do `groups.json.bak`. |
 | `start_switcher.bat` | Pohodlné spuštění / restart přepínače na pozadí. |
+| `stop_switcher.bat` | Čisté ukončení přepínače (pošle hlavnímu oknu WM_CLOSE, po 5 s bez odezvy ukončí proces natvrdo). |
+| `stop_switcher.ps1` | Vlastní logika ukončení, volá ji `stop_switcher.bat`. |
 | `assets/win-switcher-*.ico` | Ikona okna a dialogů (světlá / tmavá varianta) ze sady [Terakota](../terakota-icons). |
