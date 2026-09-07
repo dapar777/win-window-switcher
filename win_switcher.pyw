@@ -2861,7 +2861,14 @@ class WindowSwitcherApp:
         # nesmíme shodit do NOTOPMOST – jinak bychom mu zrušili ukotvení.
         ex_style = User32.GetWindowLongW(hwnd, GWL_EXSTYLE)
         self.ppp_was_topmost = bool(ex_style & WS_EX_TOPMOST) or hwnd in self.anchored_hwnds
+        # TOPMOST, který oknu zůstal z ppp minulé session (switcher byl zabit
+        # bez úklidu), NENÍ „původní stav" – jinak by okno po každém dalším
+        # ppp zůstalo natrvalo navrchu (nad kotvami).
+        if User32.GetPropW(hwnd, "WinSwitcherPpp") and hwnd not in self.anchored_hwnds:
+            self.ppp_was_topmost = False
         self.ppp_hwnd = hwnd
+        User32.SetPropW(hwnd, "WinSwitcherPpp", ctypes.c_void_p(1))
+        dbg(f"ppp-promote: hwnd={hwnd} was_topmost={self.ppp_was_topmost} maximized={bool(User32.GetWindowLongW(hwnd, -16) & 0x01000000)} covers_wa={self._covers_work_area(hwnd)} anchors={list(self.anchored_hwnds)}")
         # Maximalizované okno (nebo okno roztažené přesně přes pracovní plochu)
         # se s kotvou vůbec NEPŘEKRÝVÁ – kotva si přes AppBar rezervuje pruh,
         # do kterého maximalizace nesahá. Pouhé přeřazení nad kotvu by tedy
@@ -2892,9 +2899,31 @@ class WindowSwitcherApp:
                 if target and User32.GetWindowRect(hwnd, ctypes.byref(cur)):
                     self.ppp_restore_rect = (cur.left, cur.top, cur.right, cur.bottom)
                     tx, ty, tw, th = target
-                    User32.SetWindowPos(hwnd, None, tx, ty, tw, th, SWP_NOZORDER_FLAG)
+                    # Cíl je rect VIDITELNÉHO rámu; SetWindowPos ale nastavuje
+                    # rect včetně neviditelného okraje (~8 px) – ten přičti,
+                    # jinak roztažené okno nedosáhne k okrajům.
+                    dl, dt, dr, db = self._invisible_border(hwnd)
+                    User32.SetWindowPos(hwnd, None, tx - dl, ty - dt, tw + dl + dr, th + dt + db,
+                                        SWP_NOZORDER_FLAG)
         User32.SetForegroundWindow(hwnd)
         self._keep_ppp_above_anchors()
+
+    def _invisible_border(self, hwnd):
+        """(left, top, right, bottom) – šířka neviditelného okraje rámu okna,
+        tj. rozdíl GetWindowRect vs. viditelný rám (DWM). U oken bez DWM rámu
+        samé nuly."""
+        try:
+            with _PhysicalDpi():
+                fr = RECT()
+                if not User32.GetWindowRect(hwnd, ctypes.byref(fr)):
+                    return (0, 0, 0, 0)
+                vr = visible_window_rect(hwnd)
+            if not vr:
+                return (0, 0, 0, 0)
+            return (max(0, vr[0] - fr.left), max(0, vr[1] - fr.top),
+                    max(0, fr.right - vr[2]), max(0, fr.bottom - vr[3]))
+        except Exception:
+            return (0, 0, 0, 0)
 
     def _anchors_on_monitor_of(self, hwnd):
         """Množina kotev ležících na témž monitoru jako okno (kromě něj samého)."""
@@ -2965,14 +2994,24 @@ class WindowSwitcherApp:
         try:
             if User32.GetWindowLongW(hwnd, GWL_STYLE) & WS_MAXIMIZE:
                 return True
-            r = RECT()
-            if not User32.GetWindowRect(hwnd, ctypes.byref(r)):
-                return False
-            wx, wy, ww, wh = self._work_area_for(hwnd)
-            tol = 10  # neviditelné DWM rámečky posouvají rect o ~7 px
-            return (abs(r.left - wx) <= tol and abs(r.top - wy) <= tol and
-                    abs((r.right - r.left) - ww) <= tol and
-                    abs((r.bottom - r.top) - wh) <= tol)
+            # Porovnávej VIDITELNÝ rám s pracovní plochou, obojí ve fyzických px.
+            # GetWindowRect včetně neviditelného okraje se od work area liší
+            # o 8 px vlevo/vpravo/dole → okno přes celou plochu vycházelo
+            # o 16 px širší a starý test s tolerancí 10 ho neuznal.
+            class MONITORINFO(ctypes.Structure):
+                _fields_ = [("cbSize", ctypes.c_ulong), ("rcMonitor", RECT),
+                            ("rcWork", RECT), ("dwFlags", ctypes.c_ulong)]
+            with _PhysicalDpi():
+                vr = visible_window_rect(hwnd)
+                hmon = User32.MonitorFromWindow(hwnd, 2)
+                mi = MONITORINFO()
+                mi.cbSize = ctypes.sizeof(MONITORINFO)
+                if not (vr and hmon and User32.GetMonitorInfoW(hmon, ctypes.byref(mi))):
+                    return False
+                w = mi.rcWork
+            tol = 4
+            return (abs(vr[0] - w.left) <= tol and abs(vr[1] - w.top) <= tol and
+                    abs(vr[2] - w.right) <= tol and abs(vr[3] - w.bottom) <= tol)
         except Exception:
             return False
 
@@ -3028,6 +3067,12 @@ class WindowSwitcherApp:
     def _clear_ppp_state(self):
         """Zapomene ppp stav bez zásahu do oken (okno už bylo ošetřeno jinde,
         nebo neexistuje)."""
+        if self.ppp_hwnd:
+            try:
+                if User32.IsWindow(self.ppp_hwnd):
+                    User32.RemovePropW(self.ppp_hwnd, "WinSwitcherPpp")
+            except Exception:
+                pass
         self.ppp_hwnd = None
         self.ppp_was_topmost = False
         self.ppp_restore_rect = None
@@ -3043,6 +3088,7 @@ class WindowSwitcherApp:
         hwnd = self.ppp_hwnd
         was_topmost = self.ppp_was_topmost
         restore_rect = self.ppp_restore_rect
+        dbg(f"ppp-restore: hwnd={hwnd} was_topmost={was_topmost} restore_rect={restore_rect} suspended={self.ppp_suspended_anchors}")
         self._clear_ppp_state()  # vrátí i případně pozastavenou rezervaci pruhu
         if not hwnd or not User32.IsWindow(hwnd):
             return
@@ -3067,19 +3113,24 @@ class WindowSwitcherApp:
         if not self.ppp_hwnd:
             return
         if User32.GetForegroundWindow() != hwnd:
+            dbg(f"ppp-check: hwnd={hwnd} už není foreground – přechodný event, ignoruji")
             return  # přechodný event
         if hwnd == self.ppp_hwnd:
             return  # ppp okno je stále aktivní – nech ho nahoře
         # Stejné filtry jako u mmm – ignoruj systémové overlaye (Alt+Tab,
         # Task View, notifikace…), aby se ppp neukončilo předčasně.
         if User32.GetWindowTextLengthW(hwnd) == 0:
+            dbg(f"ppp-check: hwnd={hwnd} bez titulku – ignoruji")
             return
         ex_style = User32.GetWindowLongW(hwnd, GWL_EXSTYLE)
         hidden_by_switcher = bool(User32.GetPropW(hwnd, "WinSwitcherExStyle"))
         if (ex_style & WS_EX_TOOLWINDOW) and not hidden_by_switcher:
+            dbg(f"ppp-check: hwnd={hwnd} je toolwindow – ignoruji")
             return
         if User32.GetWindow(hwnd, GW_OWNER):
+            dbg(f"ppp-check: hwnd={hwnd} má vlastníka – ignoruji")
             return
+        dbg(f"ppp-check: foreground hwnd={hwnd} ≠ ppp {self.ppp_hwnd} → ukončuji ppp")
         self._restore_ppp_window()
 
     def on_ppp_hotkey_pressed(self):
@@ -3270,6 +3321,16 @@ class WindowSwitcherApp:
             # nikdo neuklidil.
             if self.ppp_hwnd and not self.anchored_hwnds:
                 self._restore_ppp_window()
+            # Pojistka: foreground hook občas událost nedoručí (ztracený
+            # virtuální event) – ppp okno by pak zůstalo navrchu, i když je
+            # aktivní jiné okno. Zkontroluj aktuální popředí i tady.
+            if self.ppp_hwnd:
+                fg = User32.GetForegroundWindow()
+                if fg and fg != self.ppp_hwnd:
+                    pid = ctypes.c_ulong(0)
+                    User32.GetWindowThreadProcessId(fg, ctypes.byref(pid))
+                    if pid.value != os.getpid():
+                        self._check_ppp_restore(fg)
             if self.anchored_hwnds:
                 dead = [h for h in list(self.anchored_hwnds.keys()) if not User32.IsWindow(h)]
                 for h in dead:
@@ -3759,6 +3820,7 @@ class WindowSwitcherApp:
             User32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
             if pid.value == my_pid:
                 return
+            dbg(f"fg-hook: foreground hwnd={hwnd} (ppp={self.ppp_hwnd} mmm={self.mmm_hwnd} group={self.last_activated_group!r})")
             # Předej HWND hlavnímu vláknu thread-safe cestou (fronta + virtuální event).
             self._fg_queue.put(hwnd)
             try:
@@ -3791,6 +3853,7 @@ class WindowSwitcherApp:
         try:
             while True:
                 hwnd = self._fg_queue.get_nowait()
+                dbg(f"fg-event: zpracovávám hwnd={hwnd} fg_now={User32.GetForegroundWindow()}")
                 self._check_mmm_restore(hwnd)
                 self._check_ppp_restore(hwnd)
                 self._check_fg_for_group_exit(hwnd)
@@ -4017,6 +4080,7 @@ class WindowSwitcherApp:
                     elif by2 > ay1 and by1 < ay1:
                         new_h = ay1 - by1
                 if new_w > 100 and new_h > 60 and (new_x != bx1 or new_y != by1 or new_w != bx2-bx1 or new_h != by2-by1):
+                    dbg(f"anchor-hook: ořez okna hwnd={hwnd} {(bx1, by1, bx2, by2)} → {(new_x, new_y, new_w, new_h)} kvůli kotvě {anc_hwnd}")
                     _in_callback[0] = True
                     try:
                         User32.SetWindowPos(hwnd, None, new_x, new_y, new_w, new_h, SWP_NOZORDER_FLAG)
@@ -4626,7 +4690,7 @@ class WindowSwitcherApp:
         hwnds_to_fix = []
         def enum_cb(hwnd, _):
             try:
-                if User32.GetPropW(hwnd, "WinSwitcherAnchored"):
+                if User32.GetPropW(hwnd, "WinSwitcherAnchored") or User32.GetPropW(hwnd, "WinSwitcherPpp"):
                     hwnds_to_fix.append(hwnd)
             except Exception:
                 pass
@@ -4639,6 +4703,8 @@ class WindowSwitcherApp:
             try:
                 User32.SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE_FLAG)
                 User32.RemovePropW(hwnd, "WinSwitcherAnchored")
+                User32.RemovePropW(hwnd, "WinSwitcherPpp")
+                dbg(f"startup: shazuji osiřelý TOPMOST z minulé session hwnd={hwnd}")
             except Exception:
                 pass
 
