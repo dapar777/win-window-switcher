@@ -361,6 +361,24 @@ WINEVENT_OUTOFCONTEXT    = 0x0000
 # --- Application Configuration ---
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.txt")
 
+# Tolerance (fyzické px), do které se dvě hrany monitoru berou jako „stejně blízko"
+# kotvě – pokrývá neviditelný okraj rámu (8–10 px) i ruční přisunutí k okraji.
+EDGE_TIE_PX = 24
+
+# Diagnostika kotev: --debug zapíná zápis do debug.log vedle skriptu (pythonw nemá konzoli).
+DEBUG_LOG = None
+
+
+def dbg(msg):
+    if not DEBUG_LOG:
+        return
+    try:
+        import datetime
+        with open(DEBUG_LOG, "a", encoding="utf-8") as f:
+            f.write(f"{datetime.datetime.now():%H:%M:%S.%f} {msg}\n")
+    except Exception:
+        pass
+
 
 def parse_hotkey_modifier(text):
     """Převede zápis modifikátorů ("win+ctrl", "alt shift") na MOD_* příznaky.
@@ -3177,6 +3195,7 @@ class WindowSwitcherApp:
             "global_anchor": global_anchor,
             "rect": (rect.left, rect.top, rect.right, rect.bottom),
         }
+        dbg(f"anchor hwnd={hwnd} rect(log)={self.anchored_hwnds[hwnd]['rect']} group={group_ctx!r} global={global_anchor}")
         # Zapamatuj přání ukotvení pro skupinu, aby se kotva po návratu obnovila.
         if group_ctx and not global_anchor:
             self.group_anchor_intents.setdefault(group_ctx, set()).add(hwnd)
@@ -3414,6 +3433,8 @@ class WindowSwitcherApp:
                 if vr:
                     anchor_phys_rects[hwnd_a] = vr
 
+        dbg(f"workarea: monitors(phys)={[(m[1], m[2], m[3], m[4]) for m in monitor_rects]} "
+            f"anchors(phys)={anchor_phys_rects} suspended={self.ppp_suspended_anchors}")
         for hMon, mx1, my1, mx2, my2 in monitor_rects:
             # For each edge, track the maximum intrusion of anchors on that edge.
             # edge_extent[ABE_LEFT]   = max x2 of anchors closest to left edge
@@ -3439,16 +3460,29 @@ class WindowSwitcherApp:
                 ax1, ay1, ax2, ay2 = phys
                 if ax2 <= mx1 or ax1 >= mx2 or ay2 <= my1 or ay1 >= my2:
                     continue
-                dist_left   = ax1 - mx1
-                dist_right  = mx2 - ax2
-                dist_top    = ay1 - my1
-                dist_bottom = my2 - ay2
-                min_dist = min(dist_left, dist_right, dist_top, dist_bottom)
-                if min_dist == dist_left:
+                dists = {
+                    ABE_LEFT:   ax1 - mx1,
+                    ABE_RIGHT:  mx2 - ax2,
+                    ABE_TOP:    ay1 - my1,
+                    ABE_BOTTOM: my2 - ay2,
+                }
+                # Hrana = nejbližší okraj monitoru. Okno v ROHU je ale blízko dvou
+                # hran (vlevo i nahoře, vzdálenosti se liší jen o neviditelný okraj
+                # rámu) – tam rozhoduje tvar: vysoké okno je svislý pruh (vlevo /
+                # vpravo), široké vodorovný (nahoře / dole). Dřív vyhrála hrana
+                # s menším číslem, takže kotva přes celou výšku vlevo mohla
+                # zarezervovat „horní" pruh přes celý monitor, který shell zahodil,
+                # a maximalizovaná okna šla pod kotvu.
+                min_dist = min(dists.values())
+                tall = (ay2 - ay1) >= (ax2 - ax1)
+                order = ([ABE_LEFT, ABE_RIGHT, ABE_TOP, ABE_BOTTOM] if tall
+                         else [ABE_TOP, ABE_BOTTOM, ABE_LEFT, ABE_RIGHT])
+                edge = next(e for e in order if dists[e] <= min_dist + EDGE_TIE_PX)
+                if edge == ABE_LEFT:
                     edge_extent[ABE_LEFT]   = max(edge_extent.get(ABE_LEFT,   ax2), ax2)
-                elif min_dist == dist_right:
+                elif edge == ABE_RIGHT:
                     edge_extent[ABE_RIGHT]  = min(edge_extent.get(ABE_RIGHT,  ax1), ax1)
-                elif min_dist == dist_top:
+                elif edge == ABE_TOP:
                     edge_extent[ABE_TOP]    = max(edge_extent.get(ABE_TOP,    ay2), ay2)
                 else:
                     edge_extent[ABE_BOTTOM] = min(edge_extent.get(ABE_BOTTOM, ay1), ay1)
@@ -3468,12 +3502,18 @@ class WindowSwitcherApp:
         # Rozdílově: zruš jen AppBary, které zmizely nebo změnily rect, a založ
         # jen chybějící. Dřív se všechny rušily a zakládaly znovu – každá změna
         # tak stála ~100 ms a přeskládala maximalizovaná okna na VŠECH monitorech.
+        dbg(f"workarea: desired={desired} existing={ {k: v[2] for k, v in self._appbar_windows.items()} }")
         for key in list(self._appbar_windows.keys()):
             if key not in desired or desired[key][1] != self._appbar_windows[key][2]:
                 self._remove_appbar_window(key)
         for key, (edge, appbar_rect) in desired.items():
             if key not in self._appbar_windows:
                 self._create_appbar_win(key, edge, appbar_rect)
+        if DEBUG_LOG:
+            wa = RECT()
+            with _PhysicalDpi():
+                User32.SystemParametersInfoW(0x0030, 0, ctypes.byref(wa), 0)  # SPI_GETWORKAREA
+            dbg(f"workarea: primary work area(phys) po registraci = ({wa.left},{wa.top},{wa.right},{wa.bottom})")
 
         # AppBar registration broadcasts WM_SETTINGCHANGE asynchronously;
         # the anchored window processes it later and reflows.  Re-assert its
@@ -3534,9 +3574,12 @@ class WindowSwitcherApp:
         # appbar_rect je ve fyzických pixelech → i registraci prováděj v
         # Per-Monitor-V2 kontextu, jinak by shell rect z unaware vlákna přeškáloval.
         with _PhysicalDpi():
-            Shell32.SHAppBarMessage(ABM_NEW,      ctypes.byref(abd))
-            Shell32.SHAppBarMessage(ABM_QUERYPOS, ctypes.byref(abd))
-            Shell32.SHAppBarMessage(ABM_SETPOS,   ctypes.byref(abd))
+            r_new = Shell32.SHAppBarMessage(ABM_NEW,      ctypes.byref(abd))
+            r_qry = Shell32.SHAppBarMessage(ABM_QUERYPOS, ctypes.byref(abd))
+            q_rc = (abd.rc.left, abd.rc.top, abd.rc.right, abd.rc.bottom)
+            r_set = Shell32.SHAppBarMessage(ABM_SETPOS,   ctypes.byref(abd))
+        dbg(f"appbar {key}: edge={edge} rect={tuple(appbar_rect)} NEW={r_new} QUERYPOS={r_qry}->{q_rc} "
+            f"SETPOS={r_set}->({abd.rc.left},{abd.rc.top},{abd.rc.right},{abd.rc.bottom}) hwnd={ab_hwnd}")
 
         self._appbar_windows[key] = (helper, ab_hwnd, tuple(appbar_rect))
 
@@ -4650,7 +4693,15 @@ if __name__ == "__main__":
         action="store_true",
         help="Nezmazat skupiny při startu (zachovat skupiny z předchozí session)"
     )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Zapisovat diagnostiku kotev (rezervace pruhů) do debug.log vedle skriptu"
+    )
     args = parser.parse_args()
+    if args.debug:
+        DEBUG_LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "debug.log")
+        dbg("=== start ===")
 
     root = tk.Tk()
     app = WindowSwitcherApp(root, keep_groups=args.keep_groups)

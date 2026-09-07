@@ -425,6 +425,7 @@ obrys pro destruktivní akce. Titulky oken jsou patkovým písmem (Cambria), ovl
 | Parametr | Popis |
 |----------|-------|
 | `--keep-groups` | Nezmaže skupiny při startu – zachová skupiny a rozložení z předchozího běhu. |
+| `--debug` | Zapisuje diagnostiku kotev (rozměry monitorů, rectangly kotev, registrované pruhy AppBar a výslednou pracovní plochu) do `debug.log` vedle skriptu. Hodí se, když ukotvení na nějakém PC nefunguje. |
 
 Příklad:
 ```powershell
