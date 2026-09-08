@@ -2800,8 +2800,7 @@ class WindowSwitcherApp:
             return
         rect, was_max = restore
         try:
-            User32.SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0,
-                                SWP_NOMOVE | SWP_NOSIZE_FLAG | SWP_NOACTIVATE_FLAG)
+            self._drop_topmost_below_foreground(hwnd)
             self._unstretch_window(hwnd, rect, was_max)
         except Exception:
             pass
@@ -3101,10 +3100,28 @@ class WindowSwitcherApp:
             if not was_topmost:
                 # Okno topmost původně nebylo → shoď mu ho (tím se dostane pod
                 # kotvy; ty zůstaly topmost, žádné další přeskládání netřeba).
-                User32.SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0,
-                                    SWP_NOMOVE | SWP_NOSIZE_FLAG | SWP_NOACTIVATE_FLAG)
+                self._drop_topmost_below_foreground(hwnd)
         except Exception:
             pass
+
+    def _drop_topmost_below_foreground(self, hwnd):
+        """Zruší oknu „vždy navrchu" a zasune ho POD aktuální aktivní okno.
+        Samotné HWND_NOTOPMOST okno zařadí na VRCHOL běžných oken – tedy nad
+        okno, na které uživatel právě přepnul (obě maximalizovaná → bývalé
+        ppp/mmm okno zakrývalo to aktivní). Pod foreground okno se zasouvá jen
+        když není topmost (jinak by se naše okno stalo zase topmost) a není to
+        okno switcheru."""
+        User32.SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0,
+                            SWP_NOMOVE | SWP_NOSIZE_FLAG | SWP_NOACTIVATE_FLAG)
+        fg = User32.GetForegroundWindow()
+        if fg and fg != hwnd and User32.IsWindow(fg):
+            pid = ctypes.c_ulong(0)
+            User32.GetWindowThreadProcessId(fg, ctypes.byref(pid))
+            fg_ex = User32.GetWindowLongW(fg, GWL_EXSTYLE)
+            if pid.value != os.getpid() and not (fg_ex & WS_EX_TOPMOST):
+                User32.SetWindowPos(hwnd, fg, 0, 0, 0, 0,
+                                    SWP_NOMOVE | SWP_NOSIZE_FLAG | SWP_NOACTIVATE_FLAG)
+                dbg(f"topmost-drop: hwnd={hwnd} zasunuto pod aktivní okno {fg}")
 
     def _check_ppp_restore(self, hwnd):
         """Spouští se po změně foreground okna. Když aktivní přestane být ppp
